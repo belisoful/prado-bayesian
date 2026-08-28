@@ -28,7 +28,7 @@ This README is the quick start. Deeper material lives in [`docs/`](docs/README.m
 |---|---|---|
 | PHP 8.1 or higher | required | Language runtime |
 | `ext-mbstring` | required | Multibyte-safe tokenization (every tokenizer uses `mb_*`) |
-| PRADO Framework `^4.4` (or `4.4.x-dev`) | provided by the application | `TComponent`, `TService`, `TModule`, and the `extra.prado.*` Composer plugin hooks |
+| PRADO Framework `^4.4@dev` | required (Composer installs it) | `TComponent`, `TService`, `TModule`, `TDbPropertiesTrait`, and the `extra.prado.*` Composer plugin hooks |
 | `ext-pdo` | suggested | Required by `TSqlBayesianStorage` (via Prado's `TDbConnection`) for SQL-backed persistence |
 | `ext-redis` | suggested | Required by `TRedisBayesianStorage` for Redis-backed persistence |
 
@@ -47,7 +47,10 @@ composer require ext-redis  # for TRedisBayesianStorage
 composer require belisoful/prado-bayesian
 ```
 
-Until PRADO 4.4 is released, add the framework's `master` branch as a repository in your application's `composer.json` (a `path` repository to a local checkout also works):
+The framework is a real requirement of this package — `pradosoft/prado` at `^4.4@dev` — so
+Composer installs it for you. Until PRADO 4.4 is on Packagist, your application still has to
+point Composer at the framework's repository, because **Composer reads `repositories` only from
+the root project, never from a dependency**:
 
 ```json
 {
@@ -56,7 +59,6 @@ Until PRADO 4.4 is released, add the framework's `master` branch as a repository
         { "type": "vcs", "url": "https://github.com/pradosoft/prado" }
     ],
     "require": {
-        "pradosoft/prado": "4.4.x-dev",
         "belisoful/prado-bayesian": "^0.1"
     },
     "minimum-stability": "dev",
@@ -64,11 +66,17 @@ Until PRADO 4.4 is released, add the framework's `master` branch as a repository
 }
 ```
 
-Both requirements are listed on purpose: like the other PRADO extensions, this package treats
-the framework as a development dependency, so your application declares the PRADO version it
-runs. The asset-packagist repository is required by the framework itself — PRADO depends on
-`bower-asset/*` packages, and Composer only reads repositories from the root project, never
-from a dependency, so installing without it fails with `bower-asset/jquery ... could not be found`.
+`minimum-stability: dev` with `prefer-stable: true` is what lets `^4.4@dev` resolve while every
+other dependency still comes from its stable release. The constraint matches PRADO's
+`dev-master` through the branch alias (`dev-master` → `4.4.x-dev`) declared in the framework's
+own `composer.json`.
+
+The asset-packagist repository is the framework's requirement, not this package's — PRADO
+depends on `bower-asset/*` packages, and by the same root-only rule, installing without it fails
+with `bower-asset/jquery ... could not be found`.
+
+Name `pradosoft/prado` in your own `require` as well if you want to pin the framework version
+your application runs; nothing here prevents it.
 
 The package's `config/` folder holds what PRADO's third-party plugin support reads system-wide from `composer.json` `extra.prado`: `errorMessages.txt` (the `bayesian_*` exception codes, registered through `error-messages`) and `prado-bayesian-classes.json` (Prado3-style short class names → PHP FQNs, registered through `class-map`, so `TNaiveBayesClassifier` resolves in Prado3-style configuration). Both load for every installed extension whether or not the bootstrap module is used.
 
@@ -516,9 +524,10 @@ wiring works, not that the model is good.
 ## Development
 
 PRADO 4.4 is not on Packagist yet, so `composer.json` declares the framework's GitHub
-repository and takes `pradosoft/prado` from its `master` branch as a development dependency —
-`composer install` needs no further setup. To develop against a local PRADO checkout instead,
-add a path repository to your working copy and leave it uncommitted:
+repository and requires `pradosoft/prado` at `^4.4@dev`, which resolves through the branch alias
+in PRADO's own `composer.json` (`dev-master` → `4.4.x-dev`) — `composer install` needs no
+further setup. To develop against a local PRADO checkout instead, add a path repository to your
+working copy and leave it uncommitted:
 
 ```sh
 composer config repositories.prado --json \

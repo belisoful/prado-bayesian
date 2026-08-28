@@ -85,6 +85,15 @@ if ($mode === 'capture') {
 		$configuration->getComposerExtensionClass('belisoful/prado-bayesian') === TBayesianModule::class,
 		'extra.prado.bootstrap names TBayesianModule'
 	);
+	// The consumer requires only this extension; the framework has to arrive through it.
+	$check(
+		is_dir($dir . '/vendor/pradosoft/prado'),
+		'pradosoft/prado was installed transitively, without the consumer requiring it'
+	);
+	$check(
+		class_exists(\Prado\TApplication::class),
+		'the transitively-installed framework autoloads'
+	);
 
 	foreach ($messages as $file) {
 		TException::addMessageFile($file);

@@ -54,7 +54,6 @@ cat > "$WORK_DIR/composer.json" <<JSON
         { "type": "path", "url": "$EXTENSION_DIR", "options": { "versions": { "belisoful/prado-bayesian": "0.1.0" } } }
     ],
     "require": {
-        "pradosoft/prado": "4.4.x-dev",
         "belisoful/prado-bayesian": "0.1.0"
     },
     "minimum-stability": "dev",
@@ -62,8 +61,10 @@ cat > "$WORK_DIR/composer.json" <<JSON
 }
 JSON
 
-# An application supplies the framework itself (the extension keeps pradosoft/prado as a dev
-# dependency, as the sibling extensions do), so the consumer requires both packages.
+# The consumer requires ONLY the extension: pradosoft/prado is a requirement of the extension
+# itself, so Composer must pull the framework in transitively.  The repositories block still
+# names the framework, because Composer reads `repositories` from the root project alone --
+# that is the one thing an application cannot inherit from a dependency.
 # The module is registered by its Composer package name (its class comes from
 # extra.prado.bootstrap); the classifier, storage, and service use Prado3 short names, which
 # only resolve when extra.prado.class-map has been registered.
