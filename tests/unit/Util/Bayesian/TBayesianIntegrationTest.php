@@ -1,12 +1,12 @@
 <?php
 
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
-use Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
-use Prado\Util\Bayesian\Storage\TFileBayesianStorage;
-use Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
-use Prado\Util\Bayesian\TBayesianRecommender;
-use Prado\Util\Bayesian\TBayesianTrainingSet;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
+use Belisoful\Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
+use Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianRecommender;
+use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
 
 /**
  * Integration tests that exercise end-to-end workflows across multiple classes.
@@ -163,10 +163,10 @@ class TBayesianIntegrationTest extends PHPUnit\Framework\TestCase
 	public function testAllClassifierVariantsRoundTripViaMemoryStorage()
 	{
 		$variants = [
-			\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier::class,
-			\Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes::class,
-			\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class,
-			\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes::class,
+			\Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier::class,
+			\Belisoful\Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes::class,
+			\Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class,
+			\Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes::class,
 		];
 		foreach ($variants as $class) {
 			$storage = new TMemoryBayesianStorage();

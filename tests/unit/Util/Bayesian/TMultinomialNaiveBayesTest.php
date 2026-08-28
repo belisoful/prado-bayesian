@@ -1,7 +1,7 @@
 <?php
 
-use Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 
 class TMultinomialNaiveBayesTest extends PHPUnit\Framework\TestCase
 {
@@ -24,7 +24,7 @@ class TMultinomialNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testSaveAndLoadRoundTrip()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$classifier = new TMultinomialNaiveBayes();
 		$classifier->setStorage($storage);
 		$classifier->setName('mnb');

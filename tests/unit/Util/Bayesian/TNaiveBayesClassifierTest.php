@@ -1,12 +1,12 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 use Prado\Exceptions\TConfigurationException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Exceptions\TInvalidOperationException;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
-use Prado\Util\Bayesian\TBayesianTrainingSet;
-use Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 
 class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 {
@@ -239,7 +239,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 
 	public function testMultinomialNaiveBayesExportsCorrectKind()
 	{
-		$classifier = new \Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes();
+		$classifier = new \Belisoful\Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes();
 		$classifier->setStorage(new TMemoryBayesianStorage());
 		$classifier->setName('model');
 		$classifier->trainOne('a', 'foo bar');
@@ -374,7 +374,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 	public function testSaveLoadRoundTripsNGramTokenizer()
 	{
 		$storage = new TMemoryBayesianStorage();
-		$tokenizer = new \Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
+		$tokenizer = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
 		$tokenizer->setN(4);
 		$tokenizer->setCharacters(true);
 		$classifier = new TNaiveBayesClassifier();
@@ -389,7 +389,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 		$restored->setStorage($storage);
 		$restored->load('ngram');
 		$restoredTokenizer = $restored->getTokenizer();
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $restoredTokenizer);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $restoredTokenizer);
 		self::assertNotSame($tokenizer, $restoredTokenizer);
 		self::assertSame(4, $restoredTokenizer->getN());
 		self::assertTrue($restoredTokenizer->getCharacters());
@@ -405,7 +405,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 	public function testSaveLoadRoundTripsRegexTokenizer()
 	{
 		$storage = new TMemoryBayesianStorage();
-		$tokenizer = new \Prado\Util\Bayesian\Tokenizer\TRegexTokenizer();
+		$tokenizer = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer();
 		$tokenizer->setPattern('/([a-z]{3,})/');
 		$tokenizer->setLowercase(false);
 		$classifier = new TNaiveBayesClassifier();
@@ -420,7 +420,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 		$restored->setStorage($storage);
 		$restored->load('regex');
 		$restoredTokenizer = $restored->getTokenizer();
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer::class, $restoredTokenizer);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer::class, $restoredTokenizer);
 		self::assertSame('/([a-z]{3,})/', $restoredTokenizer->getPattern());
 		self::assertFalse($restoredTokenizer->getLowercase());
 		$sample = 'cheap click meeting';
@@ -434,10 +434,10 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 	public function testSaveLoadRoundTripsTokenizerChain()
 	{
 		$storage = new TMemoryBayesianStorage();
-		$chain = new \Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain();
+		$chain = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain();
 		$word = new TWordTokenizer();
 		$word->setMinLength(3);
-		$ngram = new \Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
+		$ngram = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
 		$ngram->setN(2);
 		$chain->addTokenizer($word);
 		$chain->addTokenizer($ngram);
@@ -453,12 +453,12 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 		$restored->setStorage($storage);
 		$restored->load('chain');
 		$restoredChain = $restored->getTokenizer();
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain::class, $restoredChain);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain::class, $restoredChain);
 		$members = $restoredChain->getTokenizers();
 		self::assertCount(2, $members);
 		self::assertInstanceOf(TWordTokenizer::class, $members[0]);
 		self::assertSame(3, $members[0]->getMinLength());
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $members[1]);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $members[1]);
 		self::assertSame(2, $members[1]->getN());
 		$sample = 'cheap click meeting';
 		self::assertSame($chain->tokenize($sample), $restoredChain->tokenize($sample));
@@ -495,7 +495,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 	public function testLoadRejectsPayloadOfDifferentKind()
 	{
 		$storage = new TMemoryBayesianStorage();
-		$bernoulli = new \Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes();
+		$bernoulli = new \Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes();
 		$bernoulli->setStorage($storage);
 		$bernoulli->setName('bern');
 		$bernoulli->trainOne('a', 'foo bar');
@@ -523,7 +523,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 		$naive->trainOne('ham', 'meeting report tomorrow lunch');
 		$naive->save();
 
-		$multinomial = new \Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes();
+		$multinomial = new \Belisoful\Prado\Util\Bayesian\Classifier\TMultinomialNaiveBayes();
 		$multinomial->setStorage($storage);
 		$multinomial->load('nb');
 		self::assertTrue($multinomial->getIsTrained());
@@ -632,7 +632,7 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 	{
 		// A hand-built payload with an empty category: its prior is zero, so its log-posterior
 		// is -INF and it normalizes to probability 0.0.
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$storage->save('nb', [
 			'kind' => 'naive-bayes',
 			'categories' => [

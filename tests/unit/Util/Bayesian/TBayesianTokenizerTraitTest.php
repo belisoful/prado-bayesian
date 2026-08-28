@@ -1,9 +1,9 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerTrait;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 use Prado\TComponent;
-use Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
-use Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerTrait;
-use Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 
 /** A tokenizer that takes the trait's defaults: no configuration properties at all. */
 class BareTraitTokenizer extends TComponent implements IBayesianTokenizer

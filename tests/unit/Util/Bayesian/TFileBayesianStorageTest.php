@@ -1,7 +1,7 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage;
 use Prado\Exceptions\TConfigurationException;
-use Prado\Util\Bayesian\Storage\TFileBayesianStorage;
 
 class TFileBayesianStorageTest extends PHPUnit\Framework\TestCase
 {

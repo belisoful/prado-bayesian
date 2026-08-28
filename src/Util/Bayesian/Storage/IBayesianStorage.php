@@ -8,7 +8,7 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Storage;
+namespace Belisoful\Prado\Util\Bayesian\Storage;
 
 /**
  * IBayesianStorage interface.

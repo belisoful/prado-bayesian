@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
 
 class TMemoryBayesianStorageTest extends PHPUnit\Framework\TestCase
 {

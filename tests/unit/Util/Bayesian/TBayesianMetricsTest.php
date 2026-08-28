@@ -1,8 +1,8 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
+use Belisoful\Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
 use Prado\Exceptions\TInvalidDataValueException;
-use Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
-use Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
 
 class TBayesianMetricsTest extends PHPUnit\Framework\TestCase
 {

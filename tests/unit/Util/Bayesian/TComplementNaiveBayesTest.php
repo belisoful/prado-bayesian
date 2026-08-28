@@ -1,7 +1,7 @@
 <?php
 
-use Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 
 class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 {
@@ -25,7 +25,7 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 	public function testExportsComplementKind()
 	{
 		$classifier = new TComplementNaiveBayes();
-		$classifier->setStorage(new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage());
+		$classifier->setStorage(new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage());
 		$classifier->setName('cnb');
 		$classifier->trainOne('a', 'foo bar');
 		$classifier->trainOne('b', 'baz qux');
@@ -36,7 +36,7 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testSaveAndLoadRoundTrip()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$classifier = new TComplementNaiveBayes();
 		$classifier->setStorage($storage);
 		$classifier->setName('cnb');
@@ -164,7 +164,7 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testLoadInvalidatesCachedScores()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$source = new TComplementNaiveBayes();
 		$source->setStorage($storage);
 		$source->setName('other');
@@ -185,7 +185,7 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testLoadRejectsNaiveBayesPayload()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$naive = new TNaiveBayesClassifier();
 		$naive->setStorage($storage);
 		$naive->setName('nb');
@@ -204,8 +204,8 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testSaveLoadRoundTripsTokenizerAndConfiguration()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
-		$tokenizer = new \Prado\Util\Bayesian\Tokenizer\TRegexTokenizer();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$tokenizer = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer();
 		$tokenizer->setPattern('/([a-z]{3,})/');
 		$classifier = new TComplementNaiveBayes();
 		$classifier->setTokenizer($tokenizer);
@@ -221,7 +221,7 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 		$restored = new TComplementNaiveBayes();
 		$restored->setStorage($storage);
 		$restored->load('cnb');
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer::class, $restored->getTokenizer());
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer::class, $restored->getTokenizer());
 		self::assertSame('/([a-z]{3,})/', $restored->getTokenizer()->getPattern());
 		self::assertEqualsWithDelta(0.5, $restored->getAlpha(), 1e-12);
 		self::assertFalse($restored->getUseTfidf());
@@ -241,7 +241,7 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testCategoryWithoutDocumentsScoresZero()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$storage->save('cnb', [
 			'kind' => 'complement-naive-bayes',
 			'categories' => [
@@ -284,7 +284,7 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 	{
 		// A payload with token counts but no document frequencies leaves the smoothed
 		// complement mass at zero, so no category has a defined score.
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$storage->save('degenerate', [
 			'kind' => 'complement-naive-bayes',
 			'categories' => [

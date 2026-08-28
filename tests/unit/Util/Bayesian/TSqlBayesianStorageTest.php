@@ -1,8 +1,8 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 use Prado\Data\TDbConnection;
 use Prado\Exceptions\TConfigurationException;
-use Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianTestApplication.php');
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');

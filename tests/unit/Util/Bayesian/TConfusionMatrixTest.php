@@ -1,7 +1,7 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
 use Prado\Exceptions\TInvalidDataValueException;
-use Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
 
 class TConfusionMatrixTest extends PHPUnit\Framework\TestCase
 {

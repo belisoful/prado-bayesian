@@ -8,7 +8,7 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian;
+namespace Belisoful\Prado\Util\Bayesian;
 
 /**
  * IBayesianVocabulary interface.
@@ -154,7 +154,7 @@ interface IBayesianVocabulary
 	public function addDocument(string $category, array $tokens): void;
 
 	/**
-	 * Replaces the vocabulary wholesale, as {@see \Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier::load()}
+	 * Replaces the vocabulary wholesale, as {@see \Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier::load()}
 	 * does when restoring a saved model.
 	 *
 	 * A storage-backed implementation reads its per-token statistics from storage rather than

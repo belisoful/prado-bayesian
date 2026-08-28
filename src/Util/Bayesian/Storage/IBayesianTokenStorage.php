@@ -8,13 +8,13 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Storage;
+namespace Belisoful\Prado\Util\Bayesian\Storage;
 
 /**
  * IBayesianTokenStorage interface.
  *
  * A storage backend that can serve a model's statistics **per token** rather than only as one
- * payload.  It is the seam behind {@see \Prado\Util\Bayesian\TLazyBayesianVocabulary}, which
+ * payload.  It is the seam behind {@see \Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary}, which
  * lets a classifier score a document by reading the statistics of that document's tokens
  * instead of loading the whole model into the process.
  *

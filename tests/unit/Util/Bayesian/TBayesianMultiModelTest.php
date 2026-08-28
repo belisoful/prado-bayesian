@@ -1,10 +1,10 @@
 <?php
 
-use Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
-use Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
-use Prado\Util\Bayesian\TBayesianModule;
+use Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianModule;
 use Prado\Xml\TXmlDocument;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianTestApplication.php');
@@ -194,7 +194,7 @@ class TBayesianMultiModelTest extends PHPUnit\Framework\TestCase
 	{
 		foreach (self::modes() as $mode) {
 			$storage = $this->storage($this->file(), $mode);
-			$tokenizer = new \Prado\Util\Bayesian\Tokenizer\TWordTokenizer();
+			$tokenizer = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer();
 			$tokenizer->setMinLength(7);
 			$tokenizer->setStopWords(['ignoreme']);
 
@@ -252,11 +252,11 @@ class TBayesianMultiModelTest extends PHPUnit\Framework\TestCase
 		$module->init($this->multiModelXml($this->file()));
 
 		$spamTokenizer = $module->getClassifier('spam')->getTokenizer();
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TWordTokenizer::class, $spamTokenizer);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer::class, $spamTokenizer);
 		self::assertSame(3, $spamTokenizer->getMinLength());
 
 		$languageTokenizer = $module->getClassifier('lang')->getTokenizer();
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $languageTokenizer);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $languageTokenizer);
 		self::assertSame(3, $languageTokenizer->getN());
 		self::assertTrue($languageTokenizer->getCharacters());
 	}
@@ -333,7 +333,7 @@ class TBayesianMultiModelTest extends PHPUnit\Framework\TestCase
 	public function testClassifiersCanBeRegisteredFromCode()
 	{
 		$module = new TBayesianModule();
-		$module->setStorage(new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage());
+		$module->setStorage(new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage());
 		$extra = new TBernoulliNaiveBayes();
 		$module->addClassifier('extra', $extra);
 

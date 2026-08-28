@@ -1,8 +1,8 @@
 <?php
 
-use Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
-use Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
-use Prado\Util\Bayesian\TBayesianCategory;
+use Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
 
 /**
  * Covers the derived caches that Bernoulli and Complement keep.
@@ -56,7 +56,7 @@ class TBayesianCacheInvalidationTest extends PHPUnit\Framework\TestCase
 			$prior = log($category->getDocumentCount() / $vocabulary->getTotalDocuments());
 			$expected[$category->getName()] = $prior + $sum;
 		}
-		$expected = \Prado\Util\Bayesian\Math\TBayesMath::normalize($expected);
+		$expected = \Belisoful\Prado\Util\Bayesian\Math\TBayesMath::normalize($expected);
 
 		foreach ($c->score($document) as $name => $score) {
 			self::assertEqualsWithDelta($expected[$name], $score, 1e-12, "category {$name}");

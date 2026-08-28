@@ -20,7 +20,7 @@ things system-wide, so an installed application needs no further wiring:
 
 | Field | Registers |
 | --- | --- |
-| `bootstrap` | `Prado\Util\Bayesian\TBayesianModule` as the extension's bootstrap module |
+| `bootstrap` | `Belisoful\Prado\Util\Bayesian\TBayesianModule` as the extension's bootstrap module |
 | `error-messages` | `config/errorMessages.txt`, so `bayesian_*` codes resolve to messages |
 | `class-map` | `config/prado-bayesian-classes.json`, the short-name → FQN map |
 
@@ -35,7 +35,7 @@ Every class in the extension is registered under its short name, so configuratio
 <classifier class="TComplementNaiveBayes" Alpha="0.5" />
 ```
 
-instead of the fully-qualified `Prado\Util\Bayesian\Classifier\TComplementNaiveBayes`. Both
+instead of the fully-qualified `Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes`. Both
 forms work for modules and for the `<classifier>`/`<storage>` child elements.
 
 **Services are the exception, and must use the short name.** PRADO resolves
@@ -54,7 +54,7 @@ autoloader for a not-yet-loaded fully-qualified name outside the framework direc
 
 ```xml
 <modules>
-    <module id="bayesian" class="Prado\Util\Bayesian\TBayesianModule" DefaultClassifier="comment-spam">
+    <module id="bayesian" class="Belisoful\Prado\Util\Bayesian\TBayesianModule" DefaultClassifier="comment-spam">
         <classifier class="TComplementNaiveBayes" Alpha="0.5" UseTfidf="true" />
         <storage class="TFileBayesianStorage" Directory="/var/lib/myapp/bayesian" />
     </module>
@@ -68,7 +68,7 @@ autoloader for a not-yet-loaded fully-qualified name outside the framework direc
 return [
     'modules' => [
         'bayesian' => [
-            'class' => 'Prado\Util\Bayesian\TBayesianModule',
+            'class' => 'Belisoful\Prado\Util\Bayesian\TBayesianModule',
             'properties' => ['DefaultClassifier' => 'comment-spam'],
             'classifier' => ['class' => 'TComplementNaiveBayes', 'Alpha' => 0.5, 'UseTfidf' => true],
             'storage'    => ['class' => 'TFileBayesianStorage', 'Directory' => '/var/lib/myapp/bayesian'],
@@ -124,7 +124,7 @@ module's storage — one database holding a spam filter, a language detector, an
 each with its own classifier variant and its own tokenizer:
 
 ```xml
-<module id="bayesian" class="Prado\Util\Bayesian\TBayesianModule" DefaultClassifierID="spam">
+<module id="bayesian" class="Belisoful\Prado\Util\Bayesian\TBayesianModule" DefaultClassifierID="spam">
     <storage class="TSqlBayesianStorage" ConnectionString="sqlite:/var/lib/myapp/bayesian.db" Mode="token" />
     <classifier id="spam" class="TComplementNaiveBayes" Model="comment-spam" Alpha="0.5">
         <tokenizer class="TWordTokenizer" MinLength="3" />
@@ -138,7 +138,7 @@ each with its own classifier variant and its own tokenizer:
 ```php
 'modules' => [
     'bayesian' => [
-        'class' => 'Prado\Util\Bayesian\TBayesianModule',
+        'class' => 'Belisoful\Prado\Util\Bayesian\TBayesianModule',
         'properties' => ['DefaultClassifierID' => 'spam'],
         'storage' => ['class' => 'TSqlBayesianStorage', 'ConnectionString' => 'sqlite:/var/lib/myapp/bayesian.db', 'Mode' => 'token'],
         'classifier' => [
@@ -292,6 +292,14 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | `bayesian_vocabulary_full_scan_unavailable` | The whole vocabulary was requested from a storage-backed model, or such a model was asked to save itself |
 | `bayesian_vocabulary_readonly` | A storage-backed vocabulary was mutated directly instead of through the classifier |
 | `bayesian_classifier_aggregate_missing` | A Bernoulli or Complement model is storage-backed and its full-scan aggregate was neither stored nor recomputable |
+
+### Model conversion
+
+| Code | Raised when |
+| --- | --- |
+| `bayesian_convert_destination_not_token` | The conversion destination is not in per-token mode |
+| `bayesian_convert_source_already_token` | The source model is already stored per token |
+| `bayesian_convert_kind_unknown` | The source model's `kind` marks a variant the converter has no class for |
 
 ### Redis storage
 

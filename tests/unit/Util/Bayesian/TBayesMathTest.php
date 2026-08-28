@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\Math\TBayesMath;
+use Belisoful\Prado\Util\Bayesian\Math\TBayesMath;
 
 class TBayesMathTest extends PHPUnit\Framework\TestCase
 {

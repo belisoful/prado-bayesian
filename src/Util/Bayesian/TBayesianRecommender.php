@@ -8,13 +8,13 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian;
+namespace Belisoful\Prado\Util\Bayesian;
 
+use Belisoful\Prado\Util\Bayesian\Classifier\IBayesianClassifier;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Exceptions\TInvalidOperationException;
 use Prado\TComponent;
-use Prado\Util\Bayesian\Classifier\IBayesianClassifier;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 
 /**
  * TBayesianRecommender class.

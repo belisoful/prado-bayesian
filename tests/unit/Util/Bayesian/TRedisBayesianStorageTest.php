@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
 

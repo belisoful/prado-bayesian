@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 
 class TWordTokenizerTest extends PHPUnit\Framework\TestCase
 {

@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\TBayesianCategory;
+use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
 
 class TBayesianCategoryTest extends PHPUnit\Framework\TestCase
 {

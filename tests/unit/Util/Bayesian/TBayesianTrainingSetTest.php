@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\TBayesianTrainingSet;
+use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
 
 class TBayesianTrainingSetTest extends PHPUnit\Framework\TestCase
 {

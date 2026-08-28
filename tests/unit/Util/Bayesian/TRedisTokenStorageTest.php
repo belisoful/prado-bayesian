@@ -3,50 +3,61 @@
 use Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
 use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
 use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
 
 /**
- * Covers per-token storage: the layout that lets a model outgrow the process scoring against it.
+ * Covers Redis per-token storage.  These need both `ext-redis` and a reachable server, so they
+ * skip on a machine without either — the encode/decode helpers this layout depends on are
+ * additionally proven in isolation by their own reflection test, so the parsing is not left
+ * resting on a live Redis being present.
  *
- * The claim these tests exist to defend is equivalence.  A per-token model is a different
- * layout, read through a different vocabulary, with the O(|V|) aggregates restored from storage
- * instead of recomputed — and none of that may change a single score. Most of what follows
- * therefore trains the same corpus twice and compares, rather than asserting numbers that could
- * both drift together.
+ * As with the SQL suite, the load-bearing assertion is equivalence: a per-token model must score
+ * exactly as the same corpus stored whole.
  */
-class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
+class TRedisTokenStorageTest extends PHPUnit\Framework\TestCase
 {
-	/** @var string[] Files to remove after the test. */
-	private array $_files = [];
+	/** @var TRedisBayesianStorage[] Storages whose keys must be cleared after the test. */
+	private array $_storages = [];
 
 	protected function setUp(): void
 	{
-		BayesianBackends::requireBackend($this, extension_loaded('pdo'), 'pdo extension not available');
-		BayesianBackends::requireBackend(
-			$this,
-			in_array('sqlite', \PDO::getAvailableDrivers(), true),
-			'pdo_sqlite driver not available'
-		);
+		BayesianBackends::requireBackend($this, extension_loaded('redis'), 'redis extension not available');
 	}
 
 	protected function tearDown(): void
 	{
-		foreach ($this->_files as $file) {
-			@unlink($file);
+		foreach ($this->_storages as $storage) {
+			try {
+				foreach ($storage->list() as $name) {
+					$storage->delete($name);
+				}
+				$storage->getRedis()->del($storage->getIndexKey());
+			} catch (\Throwable $e) {
+				// Best-effort cleanup; a dead connection here should not mask the test result.
+			}
 		}
-		$this->_files = [];
+		$this->_storages = [];
 	}
 
-	private function storage(string $mode = TSqlBayesianStorage::MODE_TOKEN): TSqlBayesianStorage
+	private function storage(string $mode = TRedisBayesianStorage::MODE_TOKEN): TRedisBayesianStorage
 	{
-		$file = sys_get_temp_dir() . '/bayesian-token-' . uniqid('', true) . '.sqlite';
-		$this->_files[] = $file;
-		$storage = new TSqlBayesianStorage();
-		$storage->setConnectionString('sqlite:' . $file);
+		$storage = new TRedisBayesianStorage();
+		// A unique prefix per storage isolates concurrent test runs sharing one Redis.
+		$storage->setKeyPrefix('test-' . uniqid('', true) . ':model:');
+		$storage->setIndexKey('test-' . uniqid('', true) . ':index');
 		$storage->setMode($mode);
+		try {
+			$storage->setHost('127.0.0.1');
+			$storage->setPort(6379);
+			$storage->setTimeout(0.5);
+			$storage->getRedis();   // force the connection attempt
+		} catch (\Throwable $e) {
+			BayesianBackends::requireBackend($this, false, 'No reachable Redis at 127.0.0.1:6379: ' . $e->getMessage());
+		}
+		$this->_storages[] = $storage;
 		return $storage;
 	}
 
@@ -79,11 +90,9 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 
 	public function testPerTokenScoresAreIdenticalToPayloadScores()
 	{
-		// The whole point.  Same corpus, same settings, two layouts — the scores must agree
-		// exactly, not approximately: nothing in the per-token path is a different calculation.
 		foreach (self::classifierClasses() as $class) {
 			foreach ([false, true] as $useTfidf) {
-				$payloadStore = $this->storage(TSqlBayesianStorage::MODE_PAYLOAD);
+				$payloadStore = $this->storage(TRedisBayesianStorage::MODE_PAYLOAD);
 				$payload = new $class();
 				$payload->setUseTfidf($useTfidf);
 				$payload->setAlpha(0.7);
@@ -106,10 +115,7 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 				$tokenLoaded->load('m');
 
 				$label = $class . ' tfidf=' . var_export($useTfidf, true);
-				self::assertFalse(
-					$tokenLoaded->getVocabulary()->getSupportsFullScan(),
-					$label . ': the loaded vocabulary should be storage-backed'
-				);
+				self::assertFalse($tokenLoaded->getVocabulary()->getSupportsFullScan(), $label);
 				foreach (['cheap prices now', 'review the report', 'entirely unseen wording', 'free'] as $probe) {
 					self::assertSame($payloadLoaded->score($probe), $tokenLoaded->score($probe), $label . ' / ' . $probe);
 					self::assertSame($payloadLoaded->classify($probe), $tokenLoaded->classify($probe), $label . ' / ' . $probe);
@@ -118,7 +124,7 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		}
 	}
 
-	public function testLoadedModelIsStorageBackedAndReportsItsScalars()
+	public function testLoadedModelIsStorageBacked()
 	{
 		$storage = $this->storage();
 		$source = new TNaiveBayesClassifier();
@@ -129,81 +135,42 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		$loaded = new TNaiveBayesClassifier();
 		$loaded->setStorage($storage);
 		$loaded->load('m');
-		$vocabulary = $loaded->getVocabulary();
 
-		self::assertInstanceOf(TLazyBayesianVocabulary::class, $vocabulary);
+		self::assertInstanceOf(TLazyBayesianVocabulary::class, $loaded->getVocabulary());
 		self::assertTrue($loaded->getIsTrained());
-		self::assertSame(6, $vocabulary->getTotalDocuments());
-		self::assertSame($source->getVocabulary()->getVocabularySize(), $vocabulary->getVocabularySize());
-		self::assertSame(['spam', 'ham'], $vocabulary->getCategoryNames());
+		self::assertSame(6, $loaded->getVocabulary()->getTotalDocuments());
+		self::assertSame(['spam', 'ham'], $loaded->getVocabulary()->getCategoryNames());
 	}
 
-	public function testEnumeratingAStorageBackedVocabularyThrows()
+	public function testCategoriesNamedLikeTheTypeBytesRoundTrip()
 	{
-		// Returning the prefetched slice would answer "the whole vocabulary" with a fraction of
-		// it, and no caller could tell.  It has to refuse instead.
-		$storage = $this->storage();
-		$source = new TNaiveBayesClassifier();
-		$source->setStorage($storage);
-		$source->setName('m');
-		$this->train($source)->save();
+		// The token-hash field is a type byte ('c'/'d') plus the category, so a category whose
+		// own name starts with 'c' or 'd' is the case most likely to be mis-parsed.
+		$build = function (TRedisBayesianStorage $storage) {
+			$c = new TNaiveBayesClassifier();
+			$c->setStorage($storage);
+			$c->setName('m');
+			$c->trainOne('cat', 'alpha beta gamma');
+			$c->trainOne('dog', 'delta epsilon zeta');
+			$c->save();
+			return $c;
+		};
+		$payloadStore = $this->storage(TRedisBayesianStorage::MODE_PAYLOAD);
+		$payload = $build($payloadStore);
+		$tokenStore = $this->storage();
+		$build($tokenStore);
 
-		$loaded = new TNaiveBayesClassifier();
-		$loaded->setStorage($storage);
-		$loaded->load('m');
-
-		$this->expectException(\Prado\Exceptions\TInvalidOperationException::class);
-		$loaded->getVocabulary()->getDocumentFrequency();
+		$loadedPayload = new TNaiveBayesClassifier();
+		$loadedPayload->setStorage($payloadStore);
+		$loadedPayload->load('m');
+		$loadedToken = new TNaiveBayesClassifier();
+		$loadedToken->setStorage($tokenStore);
+		$loadedToken->load('m');
+		self::assertSame($loadedPayload->score('alpha beta'), $loadedToken->score('alpha beta'));
 	}
 
-	public function testCategoryTokenMapsOfAStorageBackedModelThrow()
+	public function testIncrementalTrainingMatchesResidentTraining()
 	{
-		$storage = $this->storage();
-		$source = new TNaiveBayesClassifier();
-		$source->setStorage($storage);
-		$source->setName('m');
-		$this->train($source)->save();
-
-		$loaded = new TNaiveBayesClassifier();
-		$loaded->setStorage($storage);
-		$loaded->load('m');
-
-		$this->expectException(\Prado\Exceptions\TInvalidOperationException::class);
-		$loaded->getVocabulary()->getCategory('spam')->getTokenCounts();
-	}
-
-	public function testPayloadStorageRefusesAPerTokenModel()
-	{
-		// Both layouts keep a metadata row in the same table.  Read through the payload path a
-		// per-token model would import as an untrained classifier and quietly classify
-		// everything the same way, which is the failure mode worth an exception.
-		$file = sys_get_temp_dir() . '/bayesian-token-' . uniqid('', true) . '.sqlite';
-		$this->_files[] = $file;
-		$tokenStore = new TSqlBayesianStorage();
-		$tokenStore->setConnectionString('sqlite:' . $file);
-		$tokenStore->setMode(TSqlBayesianStorage::MODE_TOKEN);
-		$source = new TNaiveBayesClassifier();
-		$source->setStorage($tokenStore);
-		$source->setName('m');
-		$this->train($source)->save();
-
-		$payloadStore = new TSqlBayesianStorage();
-		$payloadStore->setConnectionString('sqlite:' . $file);
-		$reader = new TNaiveBayesClassifier();
-		$reader->setStorage($payloadStore);
-
-		try {
-			$reader->load('m');
-			self::fail('expected a per-token model to be refused by the payload path');
-		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
-			self::assertSame('bayesian_classifier_token_mode_payload', $e->getErrorCode());
-		}
-	}
-
-	public function testIncrementalTrainingMatchesTrainingTheWholeCorpusResident()
-	{
-		// Training against storage writes only the document's rows.  The resulting model must
-		// still be the one a fully resident run would have produced.
 		$storage = $this->storage();
 		$seed = new TNaiveBayesClassifier();
 		$seed->setStorage($storage);
@@ -225,7 +192,6 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		$reloaded = new TNaiveBayesClassifier();
 		$reloaded->setStorage($storage);
 		$reloaded->load('m');
-
 		self::assertSame(3, $reloaded->getVocabulary()->getTotalDocuments());
 		self::assertSame(
 			$resident->getVocabulary()->getVocabularySize(),
@@ -236,32 +202,30 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		}
 	}
 
-	public function testIncrementalTrainingIsVisibleToAnotherReader()
+	public function testIncrementalTrainingIsAtomicPerField()
 	{
+		// Training the same token in the same category twice must accumulate, which is the
+		// HINCRBY path: a second document adds to the first rather than replacing it.
 		$storage = $this->storage();
-		$seed = new TNaiveBayesClassifier();
-		$seed->setStorage($storage);
-		$seed->setName('m');
-		$seed->trainOne('spam', 'cheap pills');
-		$seed->trainOne('ham', 'team meeting');
-		$seed->save();
+		$c = new TNaiveBayesClassifier();
+		$c->setStorage($storage);
+		$c->setName('m');
+		$c->trainOne('a', 'token token other');
+		$c->trainOne('b', 'unrelated');
+		$c->save();
 
 		$writer = new TNaiveBayesClassifier();
 		$writer->setStorage($storage);
 		$writer->load('m');
-		$writer->trainOne('spam', 'lottery winner claim prize');
+		$writer->trainOne('a', 'token token token');
 
-		$reader = new TNaiveBayesClassifier();
-		$reader->setStorage($storage);
-		$reader->load('m');
-		self::assertSame('spam', $reader->classify('lottery prize'));
-		self::assertSame(3, $reader->getVocabulary()->getTotalDocuments());
+		$rows = $storage->loadTokens('m', ['token']);
+		self::assertSame(5, $rows['token']['a']['count'], 'two + three occurrences accumulate');
+		self::assertSame(2, $rows['token']['a']['docCount'], 'across two documents');
 	}
 
-	public function testDeleteRemovesTheTokenRowsNotJustTheMetadata()
+	public function testDeleteRemovesEveryPerTokenKey()
 	{
-		// A model whose token rows outlived its metadata row would come back from the dead on
-		// the next save under the same name, carrying the deleted model's counts.
 		$storage = $this->storage();
 		$source = new TNaiveBayesClassifier();
 		$source->setStorage($storage);
@@ -273,6 +237,8 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($storage->exists('m'));
 		self::assertSame([], $storage->loadTokenCategories('m'));
 		self::assertSame([], $storage->loadTokens('m', ['cheap', 'meeting']));
+		// The token set itself must be gone, or a later save would see stale members.
+		self::assertSame(0, (int) $storage->getRedis()->exists($storage->getKeyPrefix() . 'm:__toks'));
 	}
 
 	public function testSavingReplacesRatherThanAccumulates()
@@ -294,10 +260,10 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		$loaded->setStorage($storage);
 		$loaded->load('m');
 		self::assertSame(2, $loaded->getVocabulary()->getTotalDocuments());
-		self::assertSame([], $storage->loadTokens('m', ['quarterly']), 'rows of the replaced model should be gone');
+		self::assertSame([], $storage->loadTokens('m', ['quarterly']), 'a token only in the replaced model is gone');
 	}
 
-	public function testLoadTokensAnswersOnlyForTheTokensAsked()
+	public function testLoadTokensAnswersOnlyForKnownTokens()
 	{
 		$storage = $this->storage();
 		$source = new TNaiveBayesClassifier();
@@ -308,33 +274,36 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		$rows = $storage->loadTokens('m', ['cheap', 'not-a-real-token']);
 		self::assertArrayHasKey('cheap', $rows);
 		self::assertArrayNotHasKey('not-a-real-token', $rows);
-		self::assertSame(2, $rows['cheap']['spam']['count'], '"cheap" occurs twice in one spam document');
-		self::assertSame(1, $rows['cheap']['spam']['docCount'], 'in a single document');
+		self::assertSame(2, $rows['cheap']['spam']['count']);
+		self::assertSame(1, $rows['cheap']['spam']['docCount']);
 	}
 
-	public function testLoadTokensChunksALargeTokenList()
+	public function testPayloadStorageRefusesAPerTokenModel()
 	{
-		// The IN() list is chunked so a document tokenized into many n-grams cannot exceed a
-		// driver's bind-parameter limit.
-		$storage = $this->storage();
+		$tokenStore = $this->storage();
 		$source = new TNaiveBayesClassifier();
-		$source->setStorage($storage);
+		$source->setStorage($tokenStore);
 		$source->setName('m');
-		$document = [];
-		for ($i = 0; $i < 1200; $i++) {
-			$document[] = 'tok' . $i;
-		}
-		$source->trainOne('a', $document);
-		$source->trainOne('b', ['other']);
-		$source->save();
+		$this->train($source)->save();
 
-		$rows = $storage->loadTokens('m', $document);
-		self::assertCount(1200, $rows);
+		$payloadStore = new TRedisBayesianStorage();
+		$payloadStore->setKeyPrefix($tokenStore->getKeyPrefix());
+		$payloadStore->setIndexKey($tokenStore->getIndexKey());
+		$payloadStore->setHost('127.0.0.1');
+		$payloadStore->setPort(6379);
+		$reader = new TNaiveBayesClassifier();
+		$reader->setStorage($payloadStore);
+		try {
+			$reader->load('m');
+			self::fail('expected a per-token model to be refused by the payload path');
+		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+			self::assertSame('bayesian_classifier_token_mode_payload', $e->getErrorCode());
+		}
 	}
 
 	public function testTokenOperationsRequireTokenMode()
 	{
-		$storage = $this->storage(TSqlBayesianStorage::MODE_PAYLOAD);
+		$storage = $this->storage(TRedisBayesianStorage::MODE_PAYLOAD);
 		self::assertFalse($storage->getSupportsTokenLookup());
 		$this->expectException(\Prado\Exceptions\TInvalidOperationException::class);
 		$storage->loadTokens('m', ['a']);
@@ -349,9 +318,6 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 
 	public function testBernoulliAndComplementRestoreTheirFullScanAggregates()
 	{
-		// Both keep a per-category quantity summed over the whole vocabulary.  A storage-backed
-		// vocabulary cannot rebuild it, so it has to come back with the model — and if it did
-		// not, these scores would be silently shifted rather than raise.
 		foreach ([TBernoulliNaiveBayes::class, TComplementNaiveBayes::class] as $class) {
 			$storage = $this->storage();
 			$source = new $class();
@@ -368,8 +334,6 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 
 	public function testAStorageBackedModelCannotBeSavedBack()
 	{
-		// Writing the model out means reading all of it, which is the one thing this vocabulary
-		// cannot do.
 		$storage = $this->storage();
 		$source = new TNaiveBayesClassifier();
 		$source->setStorage($storage);
@@ -379,8 +343,21 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		$loaded = new TNaiveBayesClassifier();
 		$loaded->setStorage($storage);
 		$loaded->load('m');
-
 		$this->expectException(\Prado\Exceptions\TInvalidOperationException::class);
 		$loaded->save();
+	}
+
+	public function testListSpansBothModelsInTheSameKeyspace()
+	{
+		$storage = $this->storage();
+		foreach (['zeta', 'alpha', 'mid'] as $name) {
+			$c = new TNaiveBayesClassifier();
+			$c->setStorage($storage);
+			$c->setName($name);
+			$c->trainOne('x', 'one two');
+			$c->trainOne('y', 'three four');
+			$c->save();
+		}
+		self::assertSame(['alpha', 'mid', 'zeta'], $storage->list());
 	}
 }

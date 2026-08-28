@@ -8,7 +8,7 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Storage;
+namespace Belisoful\Prado\Util\Bayesian\Storage;
 
 use Prado\Data\IDataConnection;
 use Prado\Data\TDbConnection;
@@ -54,8 +54,8 @@ use Prado\TComponent;
  *   <module id="db" class="Prado\Data\TDataSourceConfig">
  *     <database ConnectionString="mysql:host=localhost;dbname=mydb" Username="user" Password="pass" />
  *   </module>
- *   <module id="bayesian" class="Prado\Util\Bayesian\TBayesianModule">
- *     <storage class="Prado\Util\Bayesian\Storage\TSqlBayesianStorage" ConnectionID="db" />
+ *   <module id="bayesian" class="Belisoful\Prado\Util\Bayesian\TBayesianModule">
+ *     <storage class="Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage" ConnectionID="db" />
  *   </module>
  * </modules>
  * ```
@@ -74,7 +74,7 @@ use Prado\TComponent;
  *             ],
  *         ],
  *         'bayesian' => [
- *             'class' => 'Prado\Util\Bayesian\TBayesianModule',
+ *             'class' => 'Belisoful\Prado\Util\Bayesian\TBayesianModule',
  *             'storage' => ['class' => 'TSqlBayesianStorage', 'ConnectionID' => 'db'],
  *         ],
  *     ],

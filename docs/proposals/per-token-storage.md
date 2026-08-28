@@ -1,6 +1,11 @@
 # Proposal: per-token storage lookup
 
-**Status:** design scope, not implemented. Not part of the 0.1.0 release documentation.
+**Status:** implemented for `TSqlBayesianStorage` and `TRedisBayesianStorage` (both `Mode="token"`),
+including the Bernoulli/Complement optimizations of Phase 1 and incremental training. This
+document is kept as the design record; the shipped behaviour is documented in
+[storage.md](../storage.md). Still open: the file backend deliberately does not get a per-token
+mode (use SQLite through `TSqlBayesianStorage` instead), and there is no blob-to-per-token
+converter yet.
 
 Today every backend serializes a model to one JSON payload and `load()` decodes all of it before
 the first classification. This proposal adds an *optional* second storage mode in which a

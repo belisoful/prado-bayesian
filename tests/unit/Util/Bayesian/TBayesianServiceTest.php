@@ -1,11 +1,11 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianModule;
+use Belisoful\Prado\Util\Bayesian\TBayesianRecommender;
+use Belisoful\Prado\Web\Services\TBayesianService;
 use Prado\Exceptions\TConfigurationException;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
-use Prado\Util\Bayesian\TBayesianModule;
-use Prado\Util\Bayesian\TBayesianRecommender;
-use Prado\Web\Services\TBayesianService;
 
 /** Exposes a stub application so the module-resolution path can be tested without a full app. */
 class StubAppBayesianService extends TBayesianService

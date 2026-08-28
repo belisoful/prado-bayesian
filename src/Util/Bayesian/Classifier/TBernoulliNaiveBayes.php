@@ -8,10 +8,10 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Classifier;
+namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
+use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
 use Prado\Exceptions\TInvalidOperationException;
-use Prado\Util\Bayesian\TBayesianCategory;
 
 /**
  * TBernoulliNaiveBayes class.
@@ -76,12 +76,14 @@ class TBernoulliNaiveBayes extends TNaiveBayesClassifier
 	 * The left term depends only on the training statistics and alpha, so it is hoisted out of
 	 * the per-document path; the right term ranges over the document's tokens alone.
 	 *
-	 * The cache is keyed on {@see \Prado\Util\Bayesian\IBayesianVocabulary::getStateSignature()}
+	 * The cache is keyed on {@see \Belisoful\Prado\Util\Bayesian\IBayesianVocabulary::getStateSignature()}
 	 * rather than on a count of documents or categories.  A stale constant here does not throw
 	 * — it silently shifts every score — so the key has to notice any mutation, including one
 	 * made directly on a category obtained from {@see getVocabulary()}.
 	 * @param TBayesianCategory $category The category.
 	 * @param float $denominator The smoothed document mass of the category.
+	 * @throws TInvalidOperationException `bayesian_classifier_aggregate_missing` when the model
+	 * is storage-backed and the constant was neither restored with it nor recomputable here.
 	 * @return float The summed log mass of the absent tokens.
 	 */
 	private function absentLogMass(TBayesianCategory $category, float $denominator): float

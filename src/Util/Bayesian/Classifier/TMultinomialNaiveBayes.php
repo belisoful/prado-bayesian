@@ -8,7 +8,7 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Classifier;
+namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
 /**
  * TMultinomialNaiveBayes class.

@@ -1,7 +1,7 @@
 <?php
 
-use Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 
 class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 {
@@ -27,7 +27,7 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 	public function testExportsBernoulliKind()
 	{
 		$classifier = new TBernoulliNaiveBayes();
-		$classifier->setStorage(new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage());
+		$classifier->setStorage(new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage());
 		$classifier->setName('bern');
 		$classifier->trainOne('a', 'foo bar');
 		$classifier->trainOne('b', 'baz qux');
@@ -40,7 +40,7 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 	{
 		// A hand-built payload with a category that has no documents: its log-posterior is -INF,
 		// which normalizes to probability 0.0, so classify() never picks it.
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$storage->save('bern', [
 			'kind' => 'bernoulli-naive-bayes',
 			'categories' => [
@@ -134,7 +134,7 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testLoadRejectsNaiveBayesPayload()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$naive = new TNaiveBayesClassifier();
 		$naive->setStorage($storage);
 		$naive->setName('nb');
@@ -153,8 +153,8 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testSaveLoadRoundTripsTokenizerAndConfiguration()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
-		$tokenizer = new \Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$tokenizer = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
 		$tokenizer->setN(4);
 		$classifier = new TBernoulliNaiveBayes();
 		$classifier->setTokenizer($tokenizer);
@@ -169,7 +169,7 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 		$restored = new TBernoulliNaiveBayes();
 		$restored->setStorage($storage);
 		$restored->load('bern');
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $restored->getTokenizer());
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $restored->getTokenizer());
 		self::assertSame(4, $restored->getTokenizer()->getN());
 		self::assertEqualsWithDelta(0.5, $restored->getAlpha(), 1e-12);
 		self::assertSame('junk', $restored->getSpamCategory());
@@ -182,7 +182,7 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 
 	public function testSaveAndLoadRoundTripPreservesBernoulliBehavior()
 	{
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$classifier = new TBernoulliNaiveBayes();
 		$classifier->setStorage($storage);
 		$classifier->setName('berni');
@@ -224,7 +224,7 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 		// A hand-built payload whose per-token document count exceeds the category's document
 		// count would make the smoothed presence probability >= 1 (log(1 - p) undefined), so the
 		// feature is skipped instead of poisoning the score with NaN.
-		$storage = new \Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
+		$storage = new \Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage();
 		$storage->save('bad', [
 			'kind' => 'bernoulli-naive-bayes',
 			'categories' => [

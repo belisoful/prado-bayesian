@@ -10,10 +10,12 @@ registered through `composer.json` `extra.prado.bootstrap`, and its `config/erro
 and `config/prado-bayesian-classes.json` load system-wide via `extra.prado.error-messages` and
 `extra.prado.class-map`. Not compatible with PRADO 4.3.x. APIs may change before 1.0.0.
 
-Classes are namespaced under `Prado\Util\Bayesian` (`Classifier`, `Tokenizer`, `Math`,
+Classes are namespaced under `Belisoful\Prado\Util\Bayesian` (`Classifier`, `Tokenizer`, `Math`,
 `Evaluation`, and `Storage` sub-namespaces), except `TBayesianService`, which lives at
-`Prado\Web\Services\TBayesianService`. Every class is also registered under its Prado3-style
-short name, so application configuration can use either form.
+`Belisoful\Prado\Web\Services\TBayesianService`. The PSR-4 root is `Belisoful\Prado\` → `src/`:
+the tree mirrors the framework's own layout so a class sits where a PRADO developer expects it,
+under a vendor prefix that keeps it out of `Prado\` itself. Every class is also registered under
+its Prado3-style short name, so application configuration can use either form.
 
 ### Added
 - `TNaiveBayesClassifier` (multinomial Naive Bayes with Laplace smoothing and optional TF-IDF), plus `TMultinomialNaiveBayes`, `TBernoulliNaiveBayes`, and `TComplementNaiveBayes` (WCNB) variants behind one `IBayesianClassifier` contract.
@@ -23,10 +25,12 @@ short name, so application configuration can use either form.
 - Storage backends behind `IBayesianStorage`: `TMemoryBayesianStorage`, `TFileBayesianStorage` (atomic JSON files), `TSqlBayesianStorage` (SQLite/MySQL/PostgreSQL via `TDbConnection`, driver-aware DDL, `AutoCreateTable`), `TRedisBayesianStorage` (ext-redis).
 - `TBayesianRecommender` / `IBayesianRecommender` ranking candidates by P(positive | context + candidate).
 - `TConfusionMatrix` and `TBayesianMetrics` (accuracy, precision, recall, F1, macro/micro).
-- `TBayesianModule` (`TModule` bootstrap named in `extra.prado.bootstrap`; `<classifier>`/`<storage>` child elements, `DefaultClassifier` eager load). Several `<classifier id="..." Model="...">` elements may share one storage backend, each with its own variant and its own `<tokenizer>`; `getClassifier($id)` selects between them and `DefaultClassifierID` picks the default and `TBayesianService` (read-only JSON `classify`/`recommend` HTTP actions with JSON error responses, `MaxTextLength`, `ModuleID`).
-- Per-token storage for `TSqlBayesianStorage`. With `Mode="token"` a model is stored as one row per (token, category) rather than one JSON payload, and a classifier scores a document by reading only that document's tokens through `TLazyBayesianVocabulary`. On a 100,000-token model that is 0.7 ms and 0.2 MB to load against 106 ms and 44.1 MB, and the model is bounded by the database rather than by PHP's `memory_limit`. Scores are identical to the whole-payload layout.
-- Training against per-token storage is incremental: `trainOne()` writes only the document's rows instead of re-serializing the model, about 11x faster on a 100,000-token model and independent of its size.
+- `TBayesianModule` (`TModule` bootstrap named in `extra.prado.bootstrap`; `<classifier>`/`<storage>` child elements, `DefaultClassifier` eager load). Several `<classifier id="..." Model="...">` elements may share one storage backend, each with its own variant and its own `<tokenizer>`; `getClassifier($id)` selects between them and `DefaultClassifierID` picks the default.
+- `TBayesianService` (read-only JSON `classify`/`recommend` HTTP actions with JSON error responses, `MaxTextLength`, `ModuleID`).
+- Per-token storage for `TSqlBayesianStorage` and `TRedisBayesianStorage`. With `Mode="token"` a model is stored per (token, category) — SQL rows, or a Redis hash per token — rather than one JSON payload, and a classifier scores a document by reading only that document's tokens through `TLazyBayesianVocabulary`. On a 100,000-token SQL model that is 0.7 ms and 0.2 MB to load against 106 ms and 44.1 MB; the SQL model is bounded by the database, the Redis model by the Redis instance's RAM (which still holds it whole). Scores are identical to the whole-payload layout in both backends.
+- Training against per-token storage is incremental: `trainOne()` writes only the document's rows instead of re-serializing the model, about 11x faster on a 100,000-token SQL model and independent of its size. The Redis backend applies the deltas with `HINCRBY`, so a document's counts accumulate atomically with no read-modify-write.
 - `IBayesianVocabulary` (implemented by `TBayesianVocabulary` and `TLazyBayesianVocabulary`) and `IBayesianTokenStorage`, the two seams the above runs through. `TFIdf::idf()` and `weight()` take document-frequency counts rather than the whole map.
+- `TBayesianModelConverter` rewrites a whole-payload model into a per-token backend without retraining — one model or every model a backend holds, across backends or in place within one database. It reads the classifier variant from the model's stored `kind`, so a caller need not know which variant each model is. Conversion is exact; the reverse direction is not offered, since the per-token layout deliberately cannot enumerate its vocabulary.
 - `docs/`: concepts (the pipeline, the three event models, smoothing, TF-IDF, log-space math, tokenization, evaluation), a class reference, the storage-backend guide (including measured model sizes and the memory each backend costs), and configuration in both XML and PHP form, including every error code.
 
 ### Behavior

@@ -12,8 +12,10 @@ Reference and background material for `belisoful/prado-bayesian`. The top-level
 
 ## Where things live
 
-All classes are namespaced under `Prado\Util\Bayesian`, except the HTTP service, which lives
-at `Prado\Web\Services\TBayesianService` where PRADO expects services to be.
+The PSR-4 root is `Belisoful\Prado\` → `src/`. All classes are namespaced under
+`Belisoful\Prado\Util\Bayesian`, except the HTTP service, which lives at
+`Belisoful\Prado\Web\Services\TBayesianService` where PRADO expects services to be — the tree
+mirrors the framework's layout beneath a vendor prefix.
 
 ```
 src/Util/Bayesian/

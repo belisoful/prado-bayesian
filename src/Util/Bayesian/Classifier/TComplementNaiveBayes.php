@@ -8,11 +8,11 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Classifier;
+namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
-use Prado\Util\Bayesian\Math\TFIdf;
+use Belisoful\Prado\Util\Bayesian\Math\TFIdf;
+use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
 use Prado\Exceptions\TInvalidOperationException;
-use Prado\Util\Bayesian\TBayesianCategory;
 
 /**
  * TComplementNaiveBayes class.
@@ -117,7 +117,7 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 	 * Both cached quantities — the corpus-wide token counts and the per-category weight norms —
 	 * are O(|V|) to rebuild and are read on every classification.  A stale one does not throw;
 	 * it silently shifts every score.  So the key is taken from
-	 * {@see \Prado\Util\Bayesian\IBayesianVocabulary::getStateSignature()}, which changes on
+	 * {@see \Belisoful\Prado\Util\Bayesian\IBayesianVocabulary::getStateSignature()}, which changes on
 	 * any mutation including one made directly on a category handed out by
 	 * {@see getVocabulary()}, rather than from totals that a rearrangement could leave
 	 * unchanged.
@@ -155,6 +155,8 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 	 * computing and caching it on first use.
 	 * @param TBayesianCategory $category The category.
 	 * @param float $denominator The smoothed complement token mass.
+	 * @throws TInvalidOperationException `bayesian_classifier_aggregate_missing` when the model
+	 * is storage-backed and the norm was neither restored with it nor recomputable here.
 	 * @return float The norm.
 	 */
 	private function categoryNorm(TBayesianCategory $category, float $denominator): float

@@ -1,8 +1,8 @@
 <?php
 
-use Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain;
-use Prado\Util\Bayesian\Tokenizer\TRegexTokenizer;
-use Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 
 class TBayesianTokenizerChainTest extends PHPUnit\Framework\TestCase
 {
@@ -92,7 +92,7 @@ class TBayesianTokenizerChainTest extends PHPUnit\Framework\TestCase
 		$word = new TWordTokenizer();
 		$word->setMinLength(3);
 		$word->setStopWords(['the']);
-		$ngram = new \Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
+		$ngram = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer();
 		$ngram->setN(2);
 		$ngram->setCharacters(false);
 		$chain->addTokenizer($word);
@@ -105,7 +105,7 @@ class TBayesianTokenizerChainTest extends PHPUnit\Framework\TestCase
 		self::assertInstanceOf(TWordTokenizer::class, $members[0]);
 		self::assertSame(3, $members[0]->getMinLength());
 		self::assertSame(['the'], $members[0]->getStopWords());
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $members[1]);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer::class, $members[1]);
 		self::assertSame(2, $members[1]->getN());
 		self::assertFalse($members[1]->getCharacters());
 		self::assertSame($chain->exportConfig(), $restored->exportConfig());

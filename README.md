@@ -84,34 +84,39 @@ The package's `config/` folder holds what PRADO's third-party plugin support rea
 
 | Class | Namespace | Role |
 |---|---|---|
-| `TBayesianModule` | `Prado\Util\Bayesian` | The `extra.prado.bootstrap` module; owns the configured default classifier |
-| `TBayesianService` | `Prado\Web\Services` | A `TService` exposing classification and recommendation over the PRADO service pipeline (HTTP request) |
-| `IBayesianClassifier` | `Prado\Util\Bayesian\Classifier` | The classifier contract: `train()`, `trainOne()`, `classify()`, `score()`, `save()`, `load()` |
-| `TNaiveBayesClassifier` | `Prado\Util\Bayesian\Classifier` | The classic Naive Bayes (multinomial event model with Laplace smoothing) — the default spam filter |
-| `TMultinomialNaiveBayes` | `Prado\Util\Bayesian\Classifier` | Multinomial Naive Bayes; counts token occurrences per category |
-| `TBernoulliNaiveBayes` | `Prado\Util\Bayesian\Classifier` | Bernoulli Naive Bayes; tracks token presence/absence per document |
-| `TComplementNaiveBayes` | `Prado\Util\Bayesian\Classifier` | Complement Naive Bayes; well-suited to imbalanced text classification |
-| `IBayesianTokenizer` | `Prado\Util\Bayesian\Tokenizer` | The tokenizer seam: input text → list of feature tokens |
-| `TWordTokenizer` | `Prado\Util\Bayesian\Tokenizer` | Default word tokenizer; lowercases, strips punctuation, drops short tokens, supports stop words |
-| `TNGramTokenizer` | `Prado\Util\Bayesian\Tokenizer` | Character or word n-grams (`n` configurable) |
-| `TRegexTokenizer` | `Prado\Util\Bayesian\Tokenizer` | A regex-driven tokenizer for custom patterns |
-| `TBayesianTokenizerChain` | `Prado\Util\Bayesian\Tokenizer` | Composes multiple tokenizers (each contributes its tokens) |
-| `TBayesianTokenizerTrait` | `Prado\Util\Bayesian\Tokenizer` | Shared tokenizer plumbing: property-driven `exportConfig()`/`importConfig()`, safe `matchAll()`, `normalizeText()` |
-| `TBayesianTokenizerFactory` | `Prado\Util\Bayesian\Tokenizer` | Serializes/restores tokenizers into the saved model, UTF-8 scrubbing, regex validation |
-| `TBayesianVocabulary` | `Prado\Util\Bayesian` | The feature vocabulary; per-category token counts, totals, smoothing |
-| `TBayesianCategory` | `Prado\Util\Bayesian` | One category: its name, document count, and token counts |
-| `TBayesianTrainingSet` | `Prado\Util\Bayesian` | An iterable labeled training set: maps categories to tokenized documents |
-| `TFIdf` | `Prado\Util\Bayesian\Math` | Term-frequency × inverse-document-frequency weighting |
-| `TBayesMath` | `Prado\Util\Bayesian\Math` | Log-space arithmetic helpers used by the classifiers to avoid underflow |
-| `TConfusionMatrix` | `Prado\Util\Bayesian\Evaluation` | Confusion matrix for evaluating a classifier against a labeled set |
-| `TBayesianMetrics` | `Prado\Util\Bayesian\Evaluation` | Precision, recall, F1, accuracy, macro/micro averages |
-| `IBayesianStorage` | `Prado\Util\Bayesian\Storage` | The persistence seam for a trained model |
-| `TMemoryBayesianStorage` | `Prado\Util\Bayesian\Storage` | Process-local in-memory storage (default; no I/O) |
-| `TFileBayesianStorage` | `Prado\Util\Bayesian\Storage` | JSON file storage (good for development, small models, single host) |
-| `TSqlBayesianStorage` | `Prado\Util\Bayesian\Storage` | SQL-backed storage using Prado's `TDbConnection` (SQLite, MySQL, PostgreSQL) |
-| `TRedisBayesianStorage` | `Prado\Util\Bayesian\Storage` | Redis-backed storage for shared hosts (requires `ext-redis`) |
-| `IBayesianRecommender` | `Prado\Util\Bayesian` | The recommender contract: `recommend()` for a user/item context |
-| `TBayesianRecommender` | `Prado\Util\Bayesian` | A probabilistic recommender built on top of any `IBayesianClassifier` |
+| `TBayesianModule` | `Belisoful\Prado\Util\Bayesian` | The `extra.prado.bootstrap` module; owns the configured default classifier |
+| `TBayesianService` | `Belisoful\Prado\Web\Services` | A `TService` exposing classification and recommendation over the PRADO service pipeline (HTTP request) |
+| `IBayesianClassifier` | `Belisoful\Prado\Util\Bayesian\Classifier` | The classifier contract: `train()`, `trainOne()`, `classify()`, `score()`, `save()`, `load()` |
+| `TNaiveBayesClassifier` | `Belisoful\Prado\Util\Bayesian\Classifier` | The classic Naive Bayes (multinomial event model with Laplace smoothing) — the default spam filter |
+| `TMultinomialNaiveBayes` | `Belisoful\Prado\Util\Bayesian\Classifier` | Multinomial Naive Bayes; counts token occurrences per category |
+| `TBernoulliNaiveBayes` | `Belisoful\Prado\Util\Bayesian\Classifier` | Bernoulli Naive Bayes; tracks token presence/absence per document |
+| `TComplementNaiveBayes` | `Belisoful\Prado\Util\Bayesian\Classifier` | Complement Naive Bayes; well-suited to imbalanced text classification |
+| `IBayesianTokenizer` | `Belisoful\Prado\Util\Bayesian\Tokenizer` | The tokenizer seam: input text → list of feature tokens |
+| `TWordTokenizer` | `Belisoful\Prado\Util\Bayesian\Tokenizer` | Default word tokenizer; lowercases, strips punctuation, drops short tokens, supports stop words |
+| `TNGramTokenizer` | `Belisoful\Prado\Util\Bayesian\Tokenizer` | Character or word n-grams (`n` configurable) |
+| `TRegexTokenizer` | `Belisoful\Prado\Util\Bayesian\Tokenizer` | A regex-driven tokenizer for custom patterns |
+| `TBayesianTokenizerChain` | `Belisoful\Prado\Util\Bayesian\Tokenizer` | Composes multiple tokenizers (each contributes its tokens) |
+| `TBayesianTokenizerTrait` | `Belisoful\Prado\Util\Bayesian\Tokenizer` | Shared tokenizer plumbing: property-driven `exportConfig()`/`importConfig()`, safe `matchAll()`, `normalizeText()` |
+| `TBayesianTokenizerFactory` | `Belisoful\Prado\Util\Bayesian\Tokenizer` | Serializes/restores tokenizers into the saved model, UTF-8 scrubbing, regex validation |
+| `IBayesianVocabulary` | `Belisoful\Prado\Util\Bayesian` | The vocabulary seam: resident, or read per token from storage. `getVocabulary()` returns this |
+| `TBayesianVocabulary` | `Belisoful\Prado\Util\Bayesian` | The resident vocabulary; per-category token counts, totals, smoothing |
+| `TLazyBayesianVocabulary` | `Belisoful\Prado\Util\Bayesian` | The storage-backed vocabulary; reads a document's tokens per classification via `IBayesianTokenStorage` |
+| `TLazyBayesianCategory` | `Belisoful\Prado\Util\Bayesian` | A category whose per-token counts come from the vocabulary's last prefetch |
+| `TBayesianCategory` | `Belisoful\Prado\Util\Bayesian` | One category: its name, document count, and token counts |
+| `TBayesianTrainingSet` | `Belisoful\Prado\Util\Bayesian` | An iterable labeled training set: maps categories to tokenized documents |
+| `TBayesianModelConverter` | `Belisoful\Prado\Util\Bayesian` | Rewrites a whole-payload model into a per-token backend without retraining |
+| `TFIdf` | `Belisoful\Prado\Util\Bayesian\Math` | Term-frequency × inverse-document-frequency weighting |
+| `TBayesMath` | `Belisoful\Prado\Util\Bayesian\Math` | Log-space arithmetic helpers used by the classifiers to avoid underflow |
+| `TConfusionMatrix` | `Belisoful\Prado\Util\Bayesian\Evaluation` | Confusion matrix for evaluating a classifier against a labeled set |
+| `TBayesianMetrics` | `Belisoful\Prado\Util\Bayesian\Evaluation` | Precision, recall, F1, accuracy, macro/micro averages |
+| `IBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | The persistence seam for a trained model |
+| `IBayesianTokenStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | A storage backend that also serves a model per token, for models larger than a process |
+| `TMemoryBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | Process-local in-memory storage (default; no I/O) |
+| `TFileBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | JSON file storage (good for development, small models, single host) |
+| `TSqlBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | SQL-backed storage via `TDbConnection` (SQLite, MySQL, PostgreSQL); whole-payload or per-token (`Mode`); connection through `TDbPropertiesTrait` |
+| `TRedisBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | Redis-backed storage for shared hosts; whole-payload or per-token (`Mode`), with atomic `HINCRBY` incremental training (requires `ext-redis`) |
+| `IBayesianRecommender` | `Belisoful\Prado\Util\Bayesian` | The recommender contract: `recommend()` for a user/item context |
+| `TBayesianRecommender` | `Belisoful\Prado\Util\Bayesian` | A probabilistic recommender built on top of any `IBayesianClassifier` |
 
 ## Architecture
 
@@ -148,18 +153,18 @@ The layers stack cleanly:
 
 - **Math** — `TBayesMath` works in log-space, so the Naive Bayes product of thousands of small probabilities never underflows. `TFIdf` weights token contributions by how discriminating they are across the corpus.
 - **Tokenizer** — `IBayesianTokenizer` is the seam between text and features. Default `TWordTokenizer` is good enough for spam filtering; swap in `TNGramTokenizer` for language-agnostic content or `TRegexTokenizer` for structured input.
-- **Vocabulary & categories** — `TBayesianVocabulary` is the per-category token-count map that backs the classifier. `TBayesianCategory` represents one class. `TBayesianTrainingSet` is the labeled corpus in training-time form.
+- **Vocabulary & categories** — `IBayesianVocabulary` is the statistics the classifier scores against, behind an interface so they need not all be resident: `TBayesianVocabulary` holds the whole model, `TLazyBayesianVocabulary` reads a document's tokens from storage per classification. `TBayesianCategory` represents one class. `TBayesianTrainingSet` is the labeled corpus in training-time form.
 - **Classifiers** — All implement `IBayesianClassifier` and accept any tokenizer + storage. `TNaiveBayesClassifier` is the canonical spam filter and the base class of the other three; `TMultinomialNaiveBayes`, `TBernoulliNaiveBayes`, and `TComplementNaiveBayes` override only the likelihood, so switching event model is a one-line change. Each writes a distinct `kind` marker into its saved model, so several variants can share one storage backend safely.
-- **Storage** — `IBayesianStorage` persists a trained model. `TMemoryBayesianStorage` is the no-I/O default; `TFileBayesianStorage` writes JSON; `TSqlBayesianStorage` uses Prado's `TDbConnection`/`TDbCommand` for SQL-backed persistence (SQLite, MySQL, PostgreSQL); `TRedisBayesianStorage` scales across processes and hosts via Redis.
+- **Storage** — `IBayesianStorage` persists a trained model. `TMemoryBayesianStorage` is the no-I/O default; `TFileBayesianStorage` writes JSON; `TSqlBayesianStorage` uses Prado's `TDbConnection`/`TDbCommand` for SQL-backed persistence (SQLite, MySQL, PostgreSQL), configured through `TDbPropertiesTrait` like any other Prado database component, and can store a model per token (`Mode="token"`) so it is bounded by the database rather than by PHP memory; `TRedisBayesianStorage` scales across processes and hosts via Redis, and like the SQL backend can store a model per token (`Mode="token"`), though there the model lives in Redis's RAM rather than on disk.
 - **Recommender** — `TBayesianRecommender` reuses the classifier: train it on user/item interactions with a positive and a negative label (`PositiveCategory` defaults to `liked`), then ask it to rank candidate items.
-- **Module & service** — `TBayesianModule` is the `extra.prado.bootstrap` entry point that registers the error message file and the default classifier. `TBayesianService` exposes the classifier and recommender over the PRADO service pipeline (HTTP), sourcing its classifier from the module.
+- **Module & service** — `TBayesianModule` is the `extra.prado.bootstrap` entry point that owns the configured classifiers and storage; one module can hold several models over one backend. `TBayesianService` exposes a classifier and the recommender over the PRADO service pipeline (HTTP), sourcing its classifier from the module.
 
 ## Usage
 
 ### Spam filter (the default)
 
 ```php
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 
 $classifier = new TNaiveBayesClassifier();
 $classifier->setName('comment-spam');
@@ -186,7 +191,7 @@ $score = $classifier->score('Buy cheap watches now!!!');                // ['spa
 ### Persist a trained model
 
 ```php
-use Prado\Util\Bayesian\Storage\TFileBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage;
 
 $storage = new TFileBayesianStorage();
 $storage->setDirectory('/var/lib/myapp/bayesian');
@@ -205,10 +210,10 @@ PRADO reads either XML or PHP application configuration; both forms are shown th
 
 ```xml
 <modules>
-    <module id="bayesian" class="Prado\Util\Bayesian\TBayesianModule" DefaultClassifier="comment-spam">
+    <module id="bayesian" class="Belisoful\Prado\Util\Bayesian\TBayesianModule" DefaultClassifier="comment-spam">
         <!-- optional: pick the classifier class and set its properties (default: TNaiveBayesClassifier) -->
-        <classifier class="Prado\Util\Bayesian\Classifier\TComplementNaiveBayes" Alpha="0.5" />
-        <storage class="Prado\Util\Bayesian\Storage\TFileBayesianStorage" Directory="/var/lib/myapp/bayesian" />
+        <classifier class="Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes" Alpha="0.5" />
+        <storage class="Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage" Directory="/var/lib/myapp/bayesian" />
     </module>
 </modules>
 <services>
@@ -223,7 +228,7 @@ PRADO reads either XML or PHP application configuration; both forms are shown th
 return [
     'modules' => [
         'bayesian' => [
-            'class' => 'Prado\Util\Bayesian\TBayesianModule',
+            'class' => 'Belisoful\Prado\Util\Bayesian\TBayesianModule',
             // Module properties go under 'properties'; the <classifier>/<storage> child
             // elements become sibling keys of 'class'.
             'properties' => ['DefaultClassifier' => 'comment-spam'],
@@ -257,7 +262,7 @@ from `extra.prado.bootstrap` and supplying both is a configuration error:
 ],
 ```
 
-Both forms of module registration work: `<module id="belisoful/prado-bayesian">` (the package name; the class comes from `extra.prado.bootstrap`) or `<module id="bayesian" class="Prado\Util\Bayesian\TBayesianModule">`. Register the service by its class-map short name `TBayesianService`: PRADO `master` resolves `<service class="…">` through `Prado::usingClass()`, which currently does not fall back to the Composer autoloader for a not-yet-loaded fully-qualified name outside the framework directory.
+Both forms of module registration work: `<module id="belisoful/prado-bayesian">` (the package name; the class comes from `extra.prado.bootstrap`) or `<module id="bayesian" class="Belisoful\Prado\Util\Bayesian\TBayesianModule">`. Register the service by its class-map short name `TBayesianService`: PRADO `master` resolves `<service class="…">` through `Prado::usingClass()`, which currently does not fall back to the Composer autoloader for a not-yet-loaded fully-qualified name outside the framework directory.
 
 `DefaultClassifier` names the model: the classifier takes that name, and if the storage already holds a saved model of that name it is loaded when the module initializes. A model that has not been trained/saved yet is simply empty until you train and `save()` it; a storage that cannot be reached is a configuration error at startup, not a silent empty model.
 
@@ -328,11 +333,17 @@ $storage = $this->getApplication()->getModule('bayesian')->getStorage();
 
 ### Model size and storage limits
 
-**Every backend loads the whole model.** A model is serialized to one JSON payload and stored as
-a single unit — one file, one row, one Redis key — and `load()` decodes all of it into PHP
-arrays before the first classification. No backend looks up individual tokens on demand, so the
-choice of backend does not change the memory a loaded model costs. It changes only where the
-model lives, who can reach it, and how large a payload the backend will physically accept.
+**In the default `payload` mode, a backend loads the whole model.** The model is one JSON unit —
+one file, one row, one Redis key — and `load()` decodes all of it into PHP arrays before the
+first classification. The figures below are for that mode, which is the right choice whenever the
+model fits comfortably in a request.
+
+`TSqlBayesianStorage` and `TRedisBayesianStorage` also offer `Mode="token"`, where the model is
+stored per token and a classification reads only the document's own tokens — so a loaded model
+costs kilobytes of PHP memory regardless of its size (a 100,000-token SQL model loads in 0.7 ms
+and 0.2 MB against 106 ms and 44 MB for the payload form). See
+[Storage backends](docs/storage.md#model-size-and-memory) for when that trade is worth it. The
+sizing below is what the whole model costs when it is resident.
 
 Measured on this codebase, with every category having seen the whole vocabulary:
 
@@ -360,7 +371,7 @@ generate far more distinct features.
 | `TMemoryBayesianStorage` | PHP `memory_limit` | Also gone at end of process |
 | `TFileBayesianStorage` | Filesystem | One `.json` file per model, read whole via `file_get_contents()` |
 | `TSqlBayesianStorage` | `LONGTEXT` 4 GB (MySQL), `TEXT` ~1 GB (PostgreSQL/SQLite) | MySQL `max_allowed_packet` (64 MB default) usually binds first |
-| `TRedisBayesianStorage` | 512 MB per string value | — |
+| `TRedisBayesianStorage` | 512 MB per value (payload); the Redis instance's RAM (token) | Redis holds the whole model in RAM either way |
 
 In every case PHP's `memory_limit` binds long before the backend's own ceiling: a 64 MB payload
 needs roughly 200–250 MB of PHP memory to decode and hold. If you need models larger than a
@@ -371,7 +382,7 @@ process can hold, the fix is a smaller feature space — not a different backend
 Train a `TBayesianRecommender`'s underlying classifier on user behavior: the "positive" category is the items the user engaged with; the "negative" category is items they ignored. Then ask it to rank candidates for a new user context.
 
 ```php
-use Prado\Util\Bayesian\TBayesianRecommender;
+use Belisoful\Prado\Util\Bayesian\TBayesianRecommender;
 
 $rec = new TBayesianRecommender();
 $rec->setPositiveCategory('liked');
@@ -398,8 +409,8 @@ Note that unseen words are ignored at classification time (they carry no learned
 ### Evaluate a model
 
 ```php
-use Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
-use Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
+use Belisoful\Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
+use Belisoful\Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
 
 $matrix = new TConfusionMatrix(['spam', 'ham']);
 foreach ($labeledTestSet as $document => $expectedLabel) {
@@ -420,14 +431,14 @@ Complement Naive Bayes classifier, a labeled training set, save/reload, classifi
 evaluation on held-out documents, and incremental retraining.
 
 ```php
-use Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
-use Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
-use Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
-use Prado\Util\Bayesian\Storage\TFileBayesianStorage;
-use Prado\Util\Bayesian\TBayesianTrainingSet;
-use Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain;
-use Prado\Util\Bayesian\Tokenizer\TNGramTokenizer;
-use Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
+use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Evaluation\TBayesianMetrics;
+use Belisoful\Prado\Util\Bayesian\Evaluation\TConfusionMatrix;
+use Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 
 // 1. Tokenizer — words for meaning, character trigrams to survive obfuscation ("ch34p").
 //    Chain members each see the original text; their outputs are concatenated.
@@ -556,7 +567,7 @@ work directory passed as the second argument belongs to the caller and is never 
 
 The committed `composer.json` carries no machine-specific paths: it points at the framework's public repository, which is what CI installs from too. A full check before committing is, in order: `php -l`, php-cs-fixer, phpstan, phpunit.
 
-Tests cover the math (log-space arithmetic, TF-IDF), tokenizers (word, n-gram, regex, chain, factory round-trips), the classifiers (Naive Bayes and the three variants over tokenized corpora, save/load including the tokenizer), the recommender, the storage backends (including the ascending-order `list()` contract, exercised with out-of-order saves so a sort cannot be confused with insertion order), the module, the service, and the metrics.
+Tests cover the math (log-space arithmetic, TF-IDF), tokenizers (word, n-gram, regex, chain, factory round-trips), the classifiers (Naive Bayes and the three variants over tokenized corpora, save/load including the tokenizer), the recommender, the storage backends (including the ascending-order `list()` contract exercised with out-of-order saves, and the framework database-connection contract of `TSqlBayesianStorage`), the module (one classifier and several sharing one backend, each with its own tokenizer), the service, and the metrics. Per-token storage is tested for score-equivalence with the whole-payload layout across every variant, in both SQL and Redis, along with incremental training and the `TBayesianModelConverter`; the Redis field encoding is additionally proven in isolation so it does not rest on a live server being present.
 
 SQL tests skip cleanly when `ext-pdo`/`pdo_sqlite` is unavailable; Redis tests skip when `ext-redis` is absent or no server listens on `127.0.0.1:6379`; the MySQL and PostgreSQL round-trips run only when `BAYESIAN_MYSQL_DSN` / `BAYESIAN_PGSQL_DSN` name a reachable server:
 
@@ -566,12 +577,12 @@ BAYESIAN_PGSQL_DSN="pgsql:host=127.0.0.1;port=5432;dbname=bayesian_test" BAYESIA
 
 CI provides Redis, MySQL, and PostgreSQL service containers and sets `BAYESIAN_REQUIRE_BACKENDS=1`, which turns each of those skips into a failure — so a green build means every backend really ran, rather than quietly skipping.
 
-Line coverage is ~92% locally with SQLite available, and higher in CI where Redis, MySQL, and PostgreSQL all run (`composer coverage`, needs Xdebug or PCOV; CI enforces a 93% floor).
+Line coverage is ~87% locally with only SQLite available, and higher in CI where Redis, MySQL, and PostgreSQL all run (`composer coverage`, needs Xdebug or PCOV; CI enforces a 93% floor). The gap between the two figures is almost entirely the Redis backend, which cannot run a line without `ext-redis`.
 
 Locally the uncovered remainder is, in order of size:
 
-- **`TRedisBayesianStorage`** — its constructor throws without `ext-redis`, so no instance can exist on a machine that lacks the extension and even the property accessors are unreachable. The one branch that *is* reachable there — the missing-extension guard itself — is covered by `testConstructorThrowsWhenRedisExtensionMissing`, which is the inverse case: it skips when `ext-redis` is present.
-- **The MySQL-only branches of `TSqlBayesianStorage`** — the `ON DUPLICATE KEY UPDATE` upsert, reachable only against a real MySQL server.
+- **`TRedisBayesianStorage`** (the largest block) — its constructor throws without `ext-redis`, so no instance can exist on a machine that lacks the extension: the whole class, both payload and per-token, is unreachable locally. The one branch that *is* reachable there — the missing-extension guard — is covered by `testConstructorThrowsWhenRedisExtensionMissing`, and the per-token field encoding is covered by `TRedisTokenEncodingTest`, which reaches the pure helpers by reflection without constructing the class. Everything else runs in CI.
+- **The MySQL-only branches of `TSqlBayesianStorage`** — the `ON DUPLICATE KEY UPDATE` upserts in both the payload and per-token paths, reachable only against a real MySQL server.
 - **IO- and DB-failure guards** — a `tempnam`/`file_put_contents` failure in `TFileBayesianStorage`, a connect failure in `TSqlBayesianStorage`. Reaching these needs the filesystem or server to fail between the check and the write.
 - **Defensive guards the public API cannot reach at all** — a smoothing denominator of zero (a positive `Alpha` rules it out), a zero TF-IDF weight (the smoothed IDF is always ≥ 1), an empty-string split behind a caller that already returned early, and a pad whose target width is never below the input. These are unreachable by construction, not merely untested.
 

@@ -8,7 +8,7 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian;
+namespace Belisoful\Prado\Util\Bayesian;
 
 /**
  * TBayesianCategory class.
@@ -45,7 +45,7 @@ class TBayesianCategory
 
 	/**
 	 * @var int Bumped by every mutation.  Classifiers cache aggregates that are expensive to
-	 * derive from these counts (see {@see \Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes}),
+	 * derive from these counts (see {@see \Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes}),
 	 * and a stale aggregate produces a silently wrong score rather than an error — so the
 	 * cache key has to notice a change the category's own totals would not reveal, such as
 	 * one token's count moving to another token.

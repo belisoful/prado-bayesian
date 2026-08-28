@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\Math\TFIdf;
+use Belisoful\Prado\Util\Bayesian\Math\TFIdf;
 
 class TFIdfTest extends PHPUnit\Framework\TestCase
 {

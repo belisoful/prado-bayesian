@@ -41,3 +41,6 @@ bayesian_classifier_aggregate_missing	= Bayesian model '{0}' is missing the '{1}
 bayesian_storage_mode_invalid	= Bayesian SQL storage mode '{0}' is invalid. Use 'payload' or 'token'.
 bayesian_classifier_token_mode_payload	= Bayesian model '{0}' is stored per token and cannot be loaded through whole-payload storage. Set Mode="token" on the storage that reads it.
 bayesian_classifier_id_unknown	= Bayesian module has no classifier with id '{0}'. Configured ids: {1}.
+bayesian_convert_destination_not_token	= Bayesian model conversion requires a per-token destination. Set Mode="token" on the destination storage.
+bayesian_convert_source_already_token	= Bayesian model '{0}' is already stored per token; there is nothing to convert.
+bayesian_convert_kind_unknown	= Bayesian model '{0}' has an unknown classifier kind '{1}'. Register it with the converter's registerKind() before converting.

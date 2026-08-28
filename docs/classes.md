@@ -10,7 +10,7 @@ are plain PHP objects used from code.
 
 ---
 
-## `Prado\Util\Bayesian`
+## `Belisoful\Prado\Util\Bayesian`
 
 ### `TBayesianModule` — *extends `TModule`*
 
@@ -20,15 +20,24 @@ See [Configuration](configuration.md).
 
 ```php
 init($config)
-getClassifier(): IBayesianClassifier          setClassifier(IBayesianClassifier $value): void
-getStorage(): ?IBayesianStorage               setStorage(IBayesianStorage $value): void
-getDefaultClassifier(): ?string               setDefaultClassifier(?string $value): void
+getClassifier(?string $id = null): IBayesianClassifier    setClassifier(IBayesianClassifier $value): void
+getClassifiers(): array                                   addClassifier(string $id, IBayesianClassifier $value): void
+hasClassifier(string $id): bool
+getStorage(): ?IBayesianStorage                           setStorage(IBayesianStorage $value): void
+getDefaultClassifier(): ?string                           setDefaultClassifier(?string $value): void
+getDefaultClassifierID(): ?string                         setDefaultClassifierID(?string $value): void
 ```
 
-`DefaultClassifier` names the model to load from storage during `init()`. A model that does not
-exist yet is simply not loaded — the classifier stays empty until trained and saved. Any other
-storage failure (unreachable database, unwritable directory) propagates as a configuration
-error rather than being swallowed.
+One module may own several classifiers over one storage backend — each `<classifier id="...">`
+with its own `Model` (the storage key), its own variant, and its own `<tokenizer>`.
+`getClassifier($id)` selects one; `getClassifier()` returns the `DefaultClassifierID` one, or
+the first configured. A single unnamed `<classifier>` is the default and needs no id. See
+[Configuration → Several models in one module](configuration.md#several-models-in-one-module).
+
+`DefaultClassifier` names the model the default classifier loads from storage during `init()`.
+Each configured model is loaded then if the storage already holds it; a model that does not
+exist yet is simply not loaded. Any other storage failure (unreachable database, unwritable
+directory) propagates as a configuration error rather than being swallowed.
 
 ### `IBayesianRecommender` / `TBayesianRecommender` — *`TComponent`*
 
@@ -43,21 +52,50 @@ getPositiveCategory(): string                 setPositiveCategory(string $value)
 
 `PositiveCategory` defaults to `'liked'` and must be one of the classifier's trained categories.
 
-### `TBayesianVocabulary`
+### `IBayesianVocabulary`
 
-The learned model: the categories, and the corpus-wide document-frequency map. Owned by the
-classifier and mutated by training — `getVocabulary()` hands back the live instance, not a copy.
+The learned statistics a classifier scores against, behind an interface so they need not all be
+resident. `getVocabulary()` returns this type.
 
 ```php
-getOrCreateCategory(string $name): TBayesianCategory   getCategory(string $name): ?TBayesianCategory
-getCategories(): array                                 getCategoryNames(): array
-getIsEmpty(): bool                                     getTotalDocuments(): int
-getDocumentFrequency(): array
+getCategory(string $name): ?TBayesianCategory   getCategories(): array   getCategoryNames(): array
+getIsEmpty(): bool                              getTotalDocuments(): int
+getVocabularySize(): int                        hasToken(string $token): bool
+getTokenDocumentFrequency(string $token): int   getTokenGlobalCount(string $token): int
+getGlobalTokenTotal(): int
+prefetch(array $tokens): void                   getSupportsFullScan(): bool
+getDocumentFrequency(): array                   getStateSignature(): string
 addDocument(string $category, array $tokens): void
 setStats(array $categories, array $documentFrequency, int $totalDocuments): void
 ```
 
-`setStats()` is the load path — it repopulates the vocabulary from a saved payload.
+The split that makes storage-backed models possible runs through this interface: scalars and
+categories are always cheap; per-token reads (`hasToken()`, `getTokenDocumentFrequency()`) are
+cheap once `prefetch()` has fetched the document's tokens; and whole-vocabulary reads
+(`getDocumentFrequency()`) are available only when `getSupportsFullScan()` is true.
+
+### `TBayesianVocabulary` — *implements `IBayesianVocabulary`*
+
+The resident implementation: the whole model in the process. `getSupportsFullScan()` is true,
+`prefetch()` is a no-op, and the vocabulary is mutated in place by training. Adds
+`getOrCreateCategory()` and the generation counter behind `getStateSignature()`. This is the
+right choice for a model that fits in memory, and the default everywhere except a per-token load.
+
+### `TLazyBayesianVocabulary` — *implements `IBayesianVocabulary`*
+
+The storage-backed implementation. Holds scalars and categories resident and reads per-token
+statistics from an `IBayesianTokenStorage` — `prefetch()` issues one batched query per
+classification, `getSupportsFullScan()` is false, and `getDocumentFrequency()` throws rather
+than return a partial map. `initialize()` loads the scalars; `applyDocument()` is the
+incremental-training write path. Bound to a model by `TNaiveBayesClassifier::load()` when the
+storage is in per-token mode.
+
+### `TLazyBayesianCategory` — *extends `TBayesianCategory`*
+
+A category whose scalar totals are resident but whose per-token counts come from the vocabulary's
+last `prefetch()`. `getTokenCount()` / `getTokenDocumentCount()` answer from the batch; the
+whole-map accessors (`getTokenCounts()`, `getVocabularySize()`) throw, because returning the
+prefetched slice would silently be a fraction of the truth.
 
 ### `TBayesianCategory`
 
@@ -86,9 +124,24 @@ getIsEmpty(): bool                   getTotalDocuments(): int
 each(): \Generator                   // yields each document, keyed by its category
 ```
 
+### `TBayesianModelConverter`
+
+Rewrites a whole-payload model into a per-token backend without retraining. See
+[Storage → Converting a model to per-token](storage.md#converting-a-model-to-per-token).
+
+```php
+convert(IBayesianStorage $source, IBayesianTokenStorage $destination, string $name, ?string $destName = null): void
+convertAll(IBayesianStorage $source, IBayesianTokenStorage $destination): array
+registerKind(string $kind, string $class): void   // teach it a custom classifier variant
+```
+
+Loads the payload into a resident vocabulary and re-saves it in the destination's layout,
+choosing the classifier variant from the model's stored `kind`. Exact and one-directional — the
+per-token layout cannot be enumerated back into a payload.
+
 ---
 
-## `Prado\Util\Bayesian\Classifier`
+## `Belisoful\Prado\Util\Bayesian\Classifier`
 
 ### `IBayesianClassifier`
 
@@ -102,7 +155,7 @@ save(): void                                  load(string $name): void
 getName(): ?string                            setName(?string $value): void
 getTokenizer(): IBayesianTokenizer            setTokenizer(IBayesianTokenizer $value): void
 getStorage(): ?IBayesianStorage               setStorage(?IBayesianStorage $value): void
-getVocabulary(): TBayesianVocabulary          getIsTrained(): bool
+getVocabulary(): IBayesianVocabulary          getIsTrained(): bool
 ```
 
 `$document` is a string, or a pre-tokenized `string[]` when you want to bypass the tokenizer.
@@ -134,7 +187,7 @@ alpha, so changing alpha after training must discard them.
 
 ---
 
-## `Prado\Util\Bayesian\Tokenizer`
+## `Belisoful\Prado\Util\Bayesian\Tokenizer`
 
 ### `IBayesianTokenizer`
 
@@ -207,7 +260,7 @@ it masquerade as "no tokens".
 
 ---
 
-## `Prado\Util\Bayesian\Math`
+## `Belisoful\Prado\Util\Bayesian\Math`
 
 ### `TBayesMath`
 
@@ -224,16 +277,17 @@ Static term weighting.
 
 ```php
 static termFrequency(int $frequency): float                        // 1 + log(f)
-static idf(string $term, array $documentFrequency, int $totalDocuments): float
-static weight(string $term, int $frequency, array $documentFrequency, int $totalDocuments): float
+static idf(int $documentFrequency, int $totalDocuments): float
+static weight(int $frequency, int $documentFrequency, int $totalDocuments): float
 ```
 
-Both `idf()` and `weight()` use the smoothed form, so the weight is never zero for a term that
-is present.
+`idf()` and `weight()` take document-frequency **counts**, not a map: a classifier scoring
+against storage-backed statistics has the one count for the term it is weighting without holding
+the whole vocabulary. Both use the smoothed form, so the weight is never zero for a present term.
 
 ---
 
-## `Prado\Util\Bayesian\Evaluation`
+## `Belisoful\Prado\Util\Bayesian\Evaluation`
 
 ### `TConfusionMatrix`
 
@@ -260,16 +314,17 @@ Reads the matrix on demand — counts recorded after construction are included.
 
 ---
 
-## `Prado\Util\Bayesian\Storage`
+## `Belisoful\Prado\Util\Bayesian\Storage`
 
 Covered in full on its own page: [Storage backends](storage.md).
 
-`IBayesianStorage`, `TMemoryBayesianStorage`, `TFileBayesianStorage`, `TSqlBayesianStorage`,
-`TRedisBayesianStorage`.
+`IBayesianStorage` and `IBayesianTokenStorage`, `TMemoryBayesianStorage`,
+`TFileBayesianStorage`, `TSqlBayesianStorage` (whole-payload or per-token via `Mode`, connection
+configured through `TDbPropertiesTrait`), `TRedisBayesianStorage` (whole-payload or per-token via `Mode`, with atomic `HINCRBY` training).
 
 ---
 
-## `Prado\Web\Services`
+## `Belisoful\Prado\Web\Services`
 
 ### `TBayesianService` — *extends `TService`*
 

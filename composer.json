@@ -25,7 +25,7 @@
 	],
 	"autoload": {
 		"psr-4": {
-			"Prado\\": "src"
+			"Belisoful\\Prado\\": "src"
 		}
 	},
 	"repositories": [
@@ -45,8 +45,8 @@
 		"pradosoft/prado": "^4.4@dev"
 	},
 	"suggest": {
-		"ext-pdo": "Required by Prado\\Util\\Bayesian\\Storage\\TSqlBayesianStorage for SQL-backed training persistence.",
-		"ext-redis": "Required by Prado\\Util\\Bayesian\\Storage\\TRedisBayesianStorage for Redis-backed training persistence."
+		"ext-pdo": "Required by Belisoful\\Prado\\Util\\Bayesian\\Storage\\TSqlBayesianStorage for SQL-backed training persistence.",
+		"ext-redis": "Required by Belisoful\\Prado\\Util\\Bayesian\\Storage\\TRedisBayesianStorage for Redis-backed training persistence."
 	},
 	"require-dev": {
 		"phpunit/phpunit": "^10",
@@ -71,7 +71,7 @@
 	},
 	"extra": {
 		"prado": {
-			"bootstrap": "Prado\\Util\\Bayesian\\TBayesianModule",
+			"bootstrap": "Belisoful\\Prado\\Util\\Bayesian\\TBayesianModule",
 			"error-messages": "config/errorMessages.txt",
 			"class-map": "config/prado-bayesian-classes.json"
 		}

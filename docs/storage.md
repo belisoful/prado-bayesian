@@ -52,11 +52,15 @@ chain tokenizes identically after `load()` into a fresh instance.
 
 ## Model size and memory
 
-**Every backend loads the whole model.** The payload is stored as a single unit — one file, one
-row, one Redis key — and `load()` decodes all of it into PHP arrays before the first
-classification. No backend resolves individual tokens on demand, so the backend choice does not
-change what a loaded model costs in memory. It changes where the model lives, who can reach it,
-and how large a payload the backend will physically accept.
+**In `payload` mode, a backend loads the whole model.** The payload is stored as a single unit —
+one file, one row, one Redis key — and `load()` decodes all of it into PHP arrays before the
+first classification. The figures here are for that mode; it is the right choice whenever the
+model fits comfortably in a request, and the only mode the in-process and file backends offer.
+
+The SQL and Redis backends also offer **`Mode="token"`** (below), where a classification reads
+only the document's own tokens, so a loaded model costs kilobytes regardless of size. That is a
+different trade — one indexed query per classification instead of a one-time decode — covered
+after the sizing here, which is what a resident model costs.
 
 Measured on this codebase, with every category having seen the whole vocabulary:
 
@@ -84,7 +88,7 @@ more distinct features.
 | `TMemoryBayesianStorage` | PHP `memory_limit` | The limit itself; the model is also gone at end of process |
 | `TFileBayesianStorage` | Filesystem | PHP memory — one `.json` per model, read whole via `file_get_contents()` |
 | `TSqlBayesianStorage` | `LONGTEXT` 4 GB (MySQL), `TEXT` ~1 GB (PostgreSQL/SQLite) | MySQL `max_allowed_packet`, 64 MB by default |
-| `TRedisBayesianStorage` | 512 MB per string value | PHP memory |
+| `TRedisBayesianStorage` | 512 MB per string value (payload), or the Redis instance's RAM (token) | PHP memory in payload mode; the Redis instance in token mode |
 
 In practice PHP's `memory_limit` binds long before any backend ceiling: a 64 MB payload needs
 roughly 200–250 MB of PHP memory to decode and hold. A model too large for one process is a
@@ -99,7 +103,7 @@ signal to shrink the feature space, not to change backend.
 | `TSqlBayesianStorage` | `Storage` | Yes | Yes | `ext-pdo` |
 | `TRedisBayesianStorage` | `Storage` | Yes | Yes | `ext-redis` |
 
-All four live in `Prado\Util\Bayesian\Storage`.
+All four live in `Belisoful\Prado\Util\Bayesian\Storage`.
 
 Configuring the SQL or Redis backend without its extension is a **configuration error**
 (`bayesian_storage_pdo_missing` / `bayesian_storage_redis_missing`) — there is deliberately no
@@ -176,7 +180,7 @@ The same two, in PHP configuration:
         ],
     ],
     'bayesian' => [
-        'class' => 'Prado\Util\Bayesian\TBayesianModule',
+        'class' => 'Belisoful\Prado\Util\Bayesian\TBayesianModule',
         'storage' => ['class' => 'TSqlBayesianStorage', 'ConnectionID' => 'db'],
     ],
 ],
@@ -232,6 +236,53 @@ success (`bayesian_storage_redis_connect_failed`, `bayesian_storage_redis_write_
 
 Unlike the file backend, a path separator in a model name is harmless here, so only empty names
 and null bytes are rejected.
+
+Like the SQL backend, it can also store a model **per token** (`Mode="token"`): a metadata
+string, a categories hash, and one hash per token, with the document's tokens read back in a
+single pipelined round trip. Incremental training uses `HINCRBY`, so a document's counts land
+atomically without a read-modify-write. The important caveat is that this raises the *per-process*
+ceiling, not the machine's — Redis still holds the whole model in RAM. It solves the cost of
+loading a large model into every PHP request and the `memory_limit` wall; it does not give
+disk-bound models the way SQL does.
+
+```php
+'storage' => [
+    'class' => 'TRedisBayesianStorage',
+    'Host' => '127.0.0.1', 'Port' => 6379, 'Mode' => 'token',
+],
+```
+
+## Converting a model to per-token
+
+A model trained and saved in `payload` mode can be moved to a per-token backend without
+retraining, with `TBayesianModelConverter`. It loads the whole-payload model into a resident
+vocabulary and re-saves it in the destination's per-token layout, reading the classifier variant
+from the model's stored `kind` so a caller need not know which variant each model is.
+
+```php
+use Belisoful\Prado\Util\Bayesian\TBayesianModelConverter;
+
+$converter = new TBayesianModelConverter();
+$converter->convert($fileStorage, $sqlTokenStorage, 'comment-spam');   // one model
+$converter->convertAll($fileStorage, $sqlTokenStorage);                // every model the source holds
+```
+
+To promote a model to per-token **within one database**, point a payload-mode and a token-mode
+storage at the same connection and convert between them:
+
+```php
+$payload = new TSqlBayesianStorage();
+$payload->setConnectionString('sqlite:/var/lib/myapp/bayesian.db');
+$token = new TSqlBayesianStorage();
+$token->setConnectionString('sqlite:/var/lib/myapp/bayesian.db');
+$token->setMode('token');
+$converter->convert($payload, $token, 'comment-spam');
+```
+
+The conversion is exact — the per-token model scores identically to the payload one. Only this
+direction is supported: per-token to payload would mean enumerating the whole vocabulary, which
+the per-token layout deliberately does not expose. Keep the payload copy, or retrain, if you need
+to go back.
 
 ## Writing your own
 

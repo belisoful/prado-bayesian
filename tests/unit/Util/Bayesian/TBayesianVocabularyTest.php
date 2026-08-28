@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\TBayesianVocabulary;
+use Belisoful\Prado\Util\Bayesian\TBayesianVocabulary;
 
 class TBayesianVocabularyTest extends PHPUnit\Framework\TestCase
 {
@@ -73,9 +73,9 @@ class TBayesianVocabularyTest extends PHPUnit\Framework\TestCase
 	public function testSetStatsReplacesVocabulary()
 	{
 		$vocab = new TBayesianVocabulary();
-		$cat1 = new \Prado\Util\Bayesian\TBayesianCategory('spam');
+		$cat1 = new \Belisoful\Prado\Util\Bayesian\TBayesianCategory('spam');
 		$cat1->setStats(2, ['a' => 4], ['a' => 1], 4);
-		$cat2 = new \Prado\Util\Bayesian\TBayesianCategory('ham');
+		$cat2 = new \Belisoful\Prado\Util\Bayesian\TBayesianCategory('ham');
 		$cat2->setStats(1, ['b' => 2], ['b' => 1], 2);
 		$vocab->setStats([$cat1, $cat2], ['a' => 1, 'b' => 1], 3);
 		self::assertSame(2, count($vocab->getCategories()));

@@ -8,24 +8,24 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Classifier;
+namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
+use Belisoful\Prado\Util\Bayesian\IBayesianVocabulary;
+use Belisoful\Prado\Util\Bayesian\Math\TBayesMath;
+use Belisoful\Prado\Util\Bayesian\Math\TFIdf;
+use Belisoful\Prado\Util\Bayesian\Storage\IBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Storage\IBayesianTokenStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
+use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
+use Belisoful\Prado\Util\Bayesian\TBayesianVocabulary;
+use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerFactory;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 use Prado\Exceptions\TConfigurationException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Exceptions\TInvalidOperationException;
 use Prado\TComponent;
-use Prado\Util\Bayesian\Math\TBayesMath;
-use Prado\Util\Bayesian\Math\TFIdf;
-use Prado\Util\Bayesian\Storage\IBayesianStorage;
-use Prado\Util\Bayesian\TBayesianCategory;
-use Prado\Util\Bayesian\TBayesianTrainingSet;
-use Prado\Util\Bayesian\IBayesianVocabulary;
-use Prado\Util\Bayesian\Storage\IBayesianTokenStorage;
-use Prado\Util\Bayesian\TLazyBayesianVocabulary;
-use Prado\Util\Bayesian\TBayesianVocabulary;
-use Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
-use Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerFactory;
-use Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 
 /**
  * TNaiveBayesClassifier class.
@@ -420,6 +420,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	 * @param string $name The model name.
 	 * @throws TConfigurationException When the model is unknown.
 	 * @throws TInvalidDataValueException When the payload belongs to another classifier variant.
+	 * @throws TInvalidOperationException When the storage is not configured for per-token lookup.
 	 */
 	protected function loadTokenModel(string $name): void
 	{

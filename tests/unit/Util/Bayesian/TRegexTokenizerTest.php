@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\Tokenizer\TRegexTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer;
 
 class TRegexTokenizerTest extends PHPUnit\Framework\TestCase
 {

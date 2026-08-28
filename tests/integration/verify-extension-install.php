@@ -22,12 +22,12 @@
  * with a message on the first failed check.
  */
 
+use Belisoful\Prado\Util\Bayesian\TBayesianModule;
 use Prado\Exceptions\TException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Prado;
 use Prado\TApplication;
 use Prado\TApplicationConfiguration;
-use Prado\Util\Bayesian\TBayesianModule;
 
 $mode = $argv[1] ?? '';
 $dir = $argv[2] ?? '';
@@ -108,7 +108,7 @@ if ($mode === 'capture') {
 
 	$classifier = Prado::createComponent('TNaiveBayesClassifier');
 	$check(
-		$classifier instanceof \Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier,
+		$classifier instanceof \Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier,
 		'the Prado3 short name TNaiveBayesClassifier resolves through the class map'
 	);
 } else {
@@ -125,7 +125,7 @@ if ($mode === 'capture') {
 	$module = $application->getModule('belisoful/prado-bayesian');
 	$check($module instanceof TBayesianModule, 'the bootstrap module booted under its package id');
 	$check(
-		$module->getClassifier() instanceof \Prado\Util\Bayesian\Classifier\TComplementNaiveBayes,
+		$module->getClassifier() instanceof \Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes,
 		'the <classifier> element selected the configured class by short name'
 	);
 	$check($module->getClassifier()->getAlpha() === 0.5, 'the <classifier> element applied Alpha');
@@ -143,7 +143,7 @@ if ($mode === 'capture') {
 		$check($module->getClassifier()->classify('cheap pills') === 'spam', 'the restored model classifies');
 
 		$check(
-			$application->getService() instanceof \Prado\Web\Services\TBayesianService,
+			$application->getService() instanceof \Belisoful\Prado\Web\Services\TBayesianService,
 			'the service registered by its class-map short name'
 		);
 		$check(

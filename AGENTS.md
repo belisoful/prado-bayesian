@@ -85,7 +85,7 @@
 - A full check consists of the 4 checks (in order): `php -l` compile, php-cs-fixer, phpstan, phpunit (all checks must pass successfully)
 - A full check must be done for code to be ready for git commit.
 - The current version is 0.1.0 (pre-release). New classes/methods use `@since 0.1.0`; the first stable release will be 1.0.0.
-- This extension namespaces its classes under `Prado\Util\Bayesian\` (PSR-4 `Prado\` → `src/`); extensions do NOT update the framework's `classes.php`.
+- This extension namespaces its classes under `Belisoful\Prado\Util\Bayesian\` (PSR-4 `Belisoful\Prado\` → `src/`); the `Prado\` prefix belongs to the framework and is never written to by this package. Extensions do NOT update the framework's `classes.php`.
 - Error codes live in `config/errorMessages.txt`, registered system-wide via `extra.prado.error-messages` in `composer.json`; the framework's `messages.txt` is not used.
 - The Prado3-style short class name → PHP FQN class map lives in `config/prado-bayesian-classes.json`, registered system-wide via `extra.prado.class-map` in `composer.json`.
 

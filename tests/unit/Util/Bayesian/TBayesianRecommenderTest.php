@@ -1,10 +1,10 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Classifier\IBayesianClassifier;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\IBayesianRecommender;
+use Belisoful\Prado\Util\Bayesian\TBayesianRecommender;
 use Prado\Exceptions\TInvalidDataValueException;
-use Prado\Util\Bayesian\Classifier\IBayesianClassifier;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Prado\Util\Bayesian\IBayesianRecommender;
-use Prado\Util\Bayesian\TBayesianRecommender;
 
 class TBayesianRecommenderTest extends PHPUnit\Framework\TestCase
 {

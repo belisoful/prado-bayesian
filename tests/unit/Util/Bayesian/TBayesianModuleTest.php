@@ -1,10 +1,10 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianModule;
 use Prado\Exceptions\TConfigurationException;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Prado\Util\Bayesian\Storage\TFileBayesianStorage;
-use Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
-use Prado\Util\Bayesian\TBayesianModule;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianTestApplication.php');
 
@@ -207,7 +207,7 @@ class TBayesianModuleTest extends PHPUnit\Framework\TestCase
 		BayesianTestApplication::get();
 		$module = new TBayesianModule();
 		try {
-			$module->init(['storage' => ['class' => 'Prado\\Util\\Bayesian\\TBayesianCategory']]);
+			$module->init(['storage' => ['class' => 'Belisoful\\Prado\\Util\\Bayesian\\TBayesianCategory']]);
 			self::fail('expected exception');
 		} catch (TConfigurationException $e) {
 			self::assertSame('bayesian_storage_class_invalid', $e->getErrorCode());
@@ -261,9 +261,9 @@ class TBayesianModuleTest extends PHPUnit\Framework\TestCase
 	{
 		BayesianTestApplication::get();
 		$module = new TBayesianModule();
-		$module->init(['classifier' => ['class' => \Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class, 'Alpha' => 0.5]]);
+		$module->init(['classifier' => ['class' => \Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class, 'Alpha' => 0.5]]);
 		$classifier = $module->getClassifier();
-		self::assertInstanceOf(\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class, $classifier);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class, $classifier);
 		self::assertEqualsWithDelta(0.5, $classifier->getAlpha(), 1e-12);
 	}
 
@@ -282,14 +282,14 @@ class TBayesianModuleTest extends PHPUnit\Framework\TestCase
 	{
 		BayesianTestApplication::get();
 		$doc = new \Prado\Xml\TXmlDocument();
-		$doc->loadFromString('<module id="bayesian" class="Prado\\Util\\Bayesian\\TBayesianModule">'
-			. '<classifier class="Prado\\Util\\Bayesian\\Classifier\\TBernoulliNaiveBayes" Alpha="0.5"/>'
-			. '<storage class="Prado\\Util\\Bayesian\\Storage\\TMemoryBayesianStorage"/>'
+		$doc->loadFromString('<module id="bayesian" class="Belisoful\\Prado\\Util\\Bayesian\\TBayesianModule">'
+			. '<classifier class="Belisoful\\Prado\\Util\\Bayesian\\Classifier\\TBernoulliNaiveBayes" Alpha="0.5"/>'
+			. '<storage class="Belisoful\\Prado\\Util\\Bayesian\\Storage\\TMemoryBayesianStorage"/>'
 			. '</module>');
 		$module = new TBayesianModule();
 		$module->init($doc);
 		$classifier = $module->getClassifier();
-		self::assertInstanceOf(\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class, $classifier);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes::class, $classifier);
 		self::assertEqualsWithDelta(0.5, $classifier->getAlpha(), 1e-12);
 		self::assertInstanceOf(TMemoryBayesianStorage::class, $module->getStorage());
 		self::assertSame($module->getStorage(), $classifier->getStorage());
@@ -309,7 +309,7 @@ class TBayesianModuleTest extends PHPUnit\Framework\TestCase
 	public function testInitPropagatesStorageExistsFailure()
 	{
 		BayesianTestApplication::get();
-		$storage = new class () extends \Prado\TComponent implements \Prado\Util\Bayesian\Storage\IBayesianStorage {
+		$storage = new class () extends \Prado\TComponent implements \Belisoful\Prado\Util\Bayesian\Storage\IBayesianStorage {
 			public function save(string $name, array $payload): void
 			{
 			}

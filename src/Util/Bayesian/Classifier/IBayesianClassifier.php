@@ -8,12 +8,12 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian\Classifier;
+namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
-use Prado\Util\Bayesian\Storage\IBayesianStorage;
-use Prado\Util\Bayesian\TBayesianTrainingSet;
-use Prado\Util\Bayesian\IBayesianVocabulary;
-use Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
+use Belisoful\Prado\Util\Bayesian\IBayesianVocabulary;
+use Belisoful\Prado\Util\Bayesian\Storage\IBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
 
 /**
  * IBayesianClassifier interface.
@@ -21,7 +21,7 @@ use Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
  * The classifier contract: a model that takes labeled documents during training and produces
  * probability distributions over categories at classification time.  Every variant
  * (multinomial, Bernoulli, complement) implements this same surface so the
- * {@see \Prado\Web\Services\TBayesianService} and {@see TBayesianRecommender} can swap them without code changes.
+ * {@see \Belisoful\Prado\Web\Services\TBayesianService} and {@see TBayesianRecommender} can swap them without code changes.
  *
  * Training accepts either a {@see TBayesianTrainingSet} or a quick-look shorthand
  * ({@see trainOne()} adds a single document to a category).  Classification accepts raw text

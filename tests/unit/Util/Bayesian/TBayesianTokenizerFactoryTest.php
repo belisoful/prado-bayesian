@@ -1,12 +1,12 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerFactory;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TRegexTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 use Prado\Exceptions\TInvalidDataValueException;
-use Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
-use Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerChain;
-use Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerFactory;
-use Prado\Util\Bayesian\Tokenizer\TNGramTokenizer;
-use Prado\Util\Bayesian\Tokenizer\TRegexTokenizer;
-use Prado\Util\Bayesian\Tokenizer\TWordTokenizer;
 
 class TBayesianTokenizerFactoryTest extends PHPUnit\Framework\TestCase
 {

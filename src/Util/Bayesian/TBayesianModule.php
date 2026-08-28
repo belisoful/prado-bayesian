@@ -8,16 +8,16 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-namespace Prado\Util\Bayesian;
+namespace Belisoful\Prado\Util\Bayesian;
 
+use Belisoful\Prado\Util\Bayesian\Classifier\IBayesianClassifier;
+use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Storage\IBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
 use Prado\Exceptions\TConfigurationException;
 use Prado\Prado;
 use Prado\TComponent;
 use Prado\TModule;
-use Prado\Util\Bayesian\Classifier\IBayesianClassifier;
-use Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Prado\Util\Bayesian\Storage\IBayesianStorage;
-use Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
 use Prado\Xml\TXmlElement;
 
 /**
@@ -44,9 +44,9 @@ use Prado\Xml\TXmlElement;
  *
  * ```xml
  * <modules>
- *     <module id="bayesian" class="Prado\Util\Bayesian\TBayesianModule" DefaultClassifier="comment-spam">
- *         <classifier class="Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier" Alpha="0.5" />
- *         <storage class="Prado\Util\Bayesian\Storage\TFileBayesianStorage" Directory="/var/lib/myapp/bayesian" />
+ *     <module id="bayesian" class="Belisoful\Prado\Util\Bayesian\TBayesianModule" DefaultClassifier="comment-spam">
+ *         <classifier class="Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier" Alpha="0.5" />
+ *         <storage class="Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage" Directory="/var/lib/myapp/bayesian" />
  *     </module>
  * </modules>
  * <services>
@@ -61,7 +61,7 @@ use Prado\Xml\TXmlElement;
  * return [
  *     'modules' => [
  *         'bayesian' => [
- *             'class' => 'Prado\Util\Bayesian\TBayesianModule',
+ *             'class' => 'Belisoful\Prado\Util\Bayesian\TBayesianModule',
  *             'properties' => ['DefaultClassifier' => 'comment-spam'],
  *             'classifier' => ['class' => 'TNaiveBayesClassifier', 'Alpha' => 0.5],
  *             'storage' => ['class' => 'TFileBayesianStorage', 'Directory' => '/var/lib/myapp/bayesian'],

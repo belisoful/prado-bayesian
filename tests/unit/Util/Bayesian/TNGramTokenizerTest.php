@@ -1,6 +1,6 @@
 <?php
 
-use Prado\Util\Bayesian\Tokenizer\TNGramTokenizer;
+use Belisoful\Prado\Util\Bayesian\Tokenizer\TNGramTokenizer;
 
 class TNGramTokenizerTest extends PHPUnit\Framework\TestCase
 {
@@ -219,8 +219,8 @@ class TNGramTokenizerTest extends PHPUnit\Framework\TestCase
 		$tokenizer = new TNGramTokenizer();
 		$tokenizer->setCharacters(false);
 		$tokenizer->setN(2);
-		self::assertInstanceOf(\Prado\Util\Bayesian\Tokenizer\TWordTokenizer::class, $tokenizer->getWordTokenizer());
-		$inner = new \Prado\Util\Bayesian\Tokenizer\TWordTokenizer();
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer::class, $tokenizer->getWordTokenizer());
+		$inner = new \Belisoful\Prado\Util\Bayesian\Tokenizer\TWordTokenizer();
 		// A minimum length of 4 drops the short words before the n-grams are built.
 		$inner->setMinLength(4);
 		$tokenizer->setWordTokenizer($inner);
