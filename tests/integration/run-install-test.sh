@@ -62,9 +62,11 @@ cat > "$WORK_DIR/composer.json" <<JSON
 JSON
 
 # The consumer requires ONLY the extension: pradosoft/prado is a requirement of the extension
-# itself, so Composer must pull the framework in transitively.  The repositories block still
-# names the framework, because Composer reads `repositories` from the root project alone --
-# that is the one thing an application cannot inherit from a dependency.
+# itself, so Composer must pull the framework in transitively.  A path repository pins the
+# framework to the LOCAL checkout under test ($PRADO_DIR) rather than resolving it from
+# Packagist, so the install runs against the framework the developer is working on -- the
+# repositories block is read from this root project alone, which is also why asset-packagist is
+# listed here (PRADO depends on bower-asset/*).
 # The module is registered by its Composer package name (its class comes from
 # extra.prado.bootstrap); the classifier, storage, and service use Prado3 short names, which
 # only resolve when extra.prado.class-map has been registered.

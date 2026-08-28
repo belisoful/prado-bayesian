@@ -9,10 +9,10 @@ composer require belisoful/prado-bayesian
 ```
 
 The framework comes with it: `pradosoft/prado` is a requirement at `^4.4@dev`, which resolves
-through the branch alias PRADO declares (`dev-master` → `4.4.x-dev`). Your application needs
-`minimum-stability: dev`, `prefer-stable: true`, and — until PRADO 4.4 reaches Packagist — the
-framework's VCS repository plus asset-packagist listed in its own `composer.json`, because
-Composer reads `repositories` only from the root project. See the
+straight from Packagist through the branch alias PRADO declares (`dev-master` → `4.4.x-dev`).
+Your application needs `minimum-stability: dev`, `prefer-stable: true`, and the asset-packagist
+repository listed in its own `composer.json` (PRADO depends on `bower-asset/*`, and Composer
+reads `repositories` only from the root project). See the
 [README](../README.md#installation) for the exact block.
 
 The package is a `prado4-extension`. Its `composer.json` `extra.prado` block registers three

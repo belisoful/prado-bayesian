@@ -108,7 +108,7 @@
 - Composer for dependency management
 - Required developer dependencies for code checking: phpunit/phpunit, phpstan/phpstan, friendsofphp/php-cs-fixer
 - Presume that project dependencies are installed
-- `pradosoft/prado` is a runtime requirement at `^4.4@dev`, resolved from the framework's GitHub repository until 4.4 reaches Packagist; the constraint matches `dev-master` through the branch alias PRADO declares (`dev-master` → `4.4.x-dev`), which is why `minimum-stability` is `dev` and `prefer-stable` is `true`. No machine-specific path is committed. To work against a local checkout, add a path repository to your working copy without committing it
+- `pradosoft/prado` is a runtime requirement at `^4.4@dev`, which resolves straight from Packagist: PRADO's `master` branch is served as `dev-master` and aliased to `4.4.x-dev`, so no framework repository entry is needed — only `minimum-stability` `dev` and `prefer-stable` `true`. No machine-specific path is committed. To work against a local checkout, add a path repository to your working copy without committing it
 
 ## Cursor/Copilot Instructions
 No specific Cursor or Copilot rules currently defined for this project.

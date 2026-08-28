@@ -2,7 +2,7 @@
 
 Bayesian classification and recommendation for the [PRADO PHP Framework](https://github.com/pradosoft/prado) (version 4.4+), implemented as a PRADO 4 extension.
 
-> **Pre-release (0.1.0).** This extension targets the PRADO `master` branch (the upcoming 4.4 release), which adds the `extra.prado.bootstrap` / `error-messages` / `class-map` Composer plugin hooks it relies on. It does not work with PRADO 4.3.x, and until PRADO 4.4 is published on Packagist you must point Composer at the framework repository yourself (see [Installation](#installation)). Public APIs may still change before 1.0.0.
+> **Pre-release (0.1.0).** This extension targets the PRADO `master` branch (the upcoming 4.4 release), which adds the `extra.prado.bootstrap` / `error-messages` / `class-map` Composer plugin hooks it relies on. It does not work with PRADO 4.3.x; because it depends on PRADO's `master` branch (`^4.4@dev`), your application needs `minimum-stability: dev` (see [Installation](#installation)). Public APIs may still change before 1.0.0.
 
 The module is designed for two common use cases out of the box:
 
@@ -48,15 +48,15 @@ composer require belisoful/prado-bayesian
 ```
 
 The framework is a real requirement of this package — `pradosoft/prado` at `^4.4@dev` — so
-Composer installs it for you. Until PRADO 4.4 is on Packagist, your application still has to
-point Composer at the framework's repository, because **Composer reads `repositories` only from
-the root project, never from a dependency**:
+Composer installs it for you. Packagist already serves PRADO's `master` branch as `dev-master`,
+which the framework aliases to `4.4.x-dev`, so `^4.4@dev` resolves from Packagist with no extra
+repository. Your application needs only the two stability flags and the asset-packagist
+repository:
 
 ```json
 {
     "repositories": [
-        { "type": "composer", "url": "https://asset-packagist.org" },
-        { "type": "vcs", "url": "https://github.com/pradosoft/prado" }
+        { "type": "composer", "url": "https://asset-packagist.org" }
     ],
     "require": {
         "belisoful/prado-bayesian": "^0.1"
@@ -72,8 +72,9 @@ other dependency still comes from its stable release. The constraint matches PRA
 own `composer.json`.
 
 The asset-packagist repository is the framework's requirement, not this package's — PRADO
-depends on `bower-asset/*` packages, and by the same root-only rule, installing without it fails
-with `bower-asset/jquery ... could not be found`.
+depends on `bower-asset/*` packages, and because **Composer reads `repositories` only from the
+root project, never from a dependency**, your application has to list it; installing without it
+fails with `bower-asset/jquery ... could not be found`.
 
 Name `pradosoft/prado` in your own `require` as well if you want to pin the framework version
 your application runs; nothing here prevents it.
@@ -565,7 +566,7 @@ The consumer project is removed when the run passes. A failing run keeps it — 
 so the half-built install can be inspected; `KEEP_WORK_DIR=1` keeps it after a passing run too. A
 work directory passed as the second argument belongs to the caller and is never removed.
 
-The committed `composer.json` carries no machine-specific paths: it points at the framework's public repository, which is what CI installs from too. A full check before committing is, in order: `php -l`, php-cs-fixer, phpstan, phpunit.
+The committed `composer.json` carries no machine-specific paths and no framework repository entry: `pradosoft/prado` at `^4.4@dev` resolves straight from Packagist, which is what CI installs from too. A full check before committing is, in order: `php -l`, php-cs-fixer, phpstan, phpunit.
 
 Tests cover the math (log-space arithmetic, TF-IDF), tokenizers (word, n-gram, regex, chain, factory round-trips), the classifiers (Naive Bayes and the three variants over tokenized corpora, save/load including the tokenizer), the recommender, the storage backends (including the ascending-order `list()` contract exercised with out-of-order saves, and the framework database-connection contract of `TSqlBayesianStorage`), the module (one classifier and several sharing one backend, each with its own tokenizer), the service, and the metrics. Per-token storage is tested for score-equivalence with the whole-payload layout across every variant, in both SQL and Redis, along with incremental training and the `TBayesianModelConverter`; the Redis field encoding is additionally proven in isolation so it does not rest on a live server being present.
 
