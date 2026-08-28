@@ -1,0 +1,142 @@
+name: PRADO Bayesian Extension
+on: [push, pull_request]
+jobs:
+  composerext:
+    name: Bayesian
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-versions: ['8.1', '8.2', '8.3']
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: bayesian
+          MYSQL_DATABASE: bayesian_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pbayesian"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: bayesian
+          POSTGRES_DB: bayesian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # A missing backend must fail the build instead of silently skipping its tests.
+      BAYESIAN_REQUIRE_BACKENDS: 1
+      BAYESIAN_MYSQL_DSN: "mysql:host=127.0.0.1;port=3306;dbname=bayesian_test"
+      BAYESIAN_MYSQL_USER: root
+      BAYESIAN_MYSQL_PASSWORD: bayesian
+      BAYESIAN_PGSQL_DSN: "pgsql:host=127.0.0.1;port=5432;dbname=bayesian_test"
+      BAYESIAN_PGSQL_USER: postgres
+      BAYESIAN_PGSQL_PASSWORD: bayesian
+
+    defaults:
+      run:
+        working-directory: prado-bayesian
+
+    steps:
+      - name: Checkout extension
+        uses: actions/checkout@v4
+        with:
+          path: prado-bayesian
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-versions }}
+          extensions: ctype, dom, intl, json, mbstring, pcre, pdo, pdo_sqlite, pdo_mysql, pdo_pgsql, sqlite3, redis, sockets, spl, zlib
+          tools: cs2pr
+          # Xdebug costs a lot of run time, so only the leg that measures coverage gets it.
+          coverage: ${{ matrix.php-versions == '8.3' && 'xdebug' || 'none' }}
+
+      - name: Validate composer.json and composer.lock
+        run: composer validate --strict
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      # No repository juggling: composer.json declares the framework's VCS repository, so this
+      # resolves pradosoft/prado from its master branch exactly as a fresh contributor would.
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Validate code syntax using php-cs-fixer
+        run: vendor/bin/php-cs-fixer fix -vvv --dry-run --using-cache=no --format=checkstyle src/ | cs2pr
+
+      - name: Validate code using phpstan
+        run: vendor/bin/phpstan analyse --error-format=checkstyle | cs2pr
+
+      - name: Run Unit Tests
+        run: composer unittest
+
+      - name: Measure coverage
+        if: matrix.php-versions == '8.3'
+        env:
+          XDEBUG_MODE: coverage
+        run: |
+          composer coverage
+          # 92% is reachable without Redis; the Redis suite pushes it higher here. Raise this
+          # floor to just under the figure the run reports once it has settled.
+          php tests/test_tools/check-coverage.php build/logs/clover.xml 93
+
+  integration:
+    name: Composer extension install
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout extension
+        uses: actions/checkout@v4
+        with:
+          path: prado-bayesian
+
+      - name: Checkout PRADO framework (4.4 dev)
+        uses: actions/checkout@v4
+        with:
+          repository: pradosoft/prado
+          ref: master
+          path: prado.master
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: ctype, dom, intl, json, mbstring, pcre, pdo, pdo_sqlite, sqlite3, sockets, spl, zlib
+
+      # Builds a throwaway consumer project that requires the extension through Composer, then
+      # asserts that extra.prado's error-messages, class-map, and bootstrap all take effect and
+      # that a real request reaches TBayesianService.
+      - name: Verify the Composer extension wiring
+        run: bash prado-bayesian/tests/integration/run-install-test.sh

@@ -1,0 +1,79 @@
+{
+	"name": "belisoful/prado-bayesian",
+	"type": "prado4-extension",
+	"description": "Bayesian classification and recommendation for the PRADO PHP framework: Naive Bayes spam filtering, multinomial/Bernoulli/complement Naive Bayes, TF-IDF weighting, evaluation metrics, and a probabilistic recommender.",
+	"keywords": [
+		"prado",
+		"framework",
+		"bayesian",
+		"naive-bayes",
+		"spam-filter",
+		"recommender",
+		"classification",
+		"tf-idf",
+		"extension"
+	],
+	"homepage": "https://github.com/belisoful/prado-bayesian",
+	"license": "BSD-3-Clause",
+	"authors": [
+		{
+			"name": "Brad Anderson",
+			"email": "belisoful@icloud.com",
+			"role": "Developer",
+			"homepage": "https://github.com/belisoful"
+		}
+	],
+	"autoload": {
+		"psr-4": {
+			"Prado\\": "src"
+		}
+	},
+	"repositories": [
+		{
+			"type": "composer",
+			"url": "https://asset-packagist.org"
+		},
+		{
+			"type": "vcs",
+			"url": "https://github.com/pradosoft/prado",
+			"no-api": true
+		}
+	],
+	"require": {
+		"php": ">=8.1.0",
+		"ext-mbstring": "*"
+	},
+	"suggest": {
+		"ext-pdo": "Required by Prado\\Util\\Bayesian\\Storage\\TSqlBayesianStorage for SQL-backed training persistence.",
+		"ext-redis": "Required by Prado\\Util\\Bayesian\\Storage\\TRedisBayesianStorage for Redis-backed training persistence."
+	},
+	"require-dev": {
+		"pradosoft/prado": "^4.4 || dev-master",
+		"phpunit/phpunit": "^10",
+		"phpdocumentor/shim": "^3",
+		"friendsofphp/php-cs-fixer": "^3.94",
+		"phpstan/phpstan": "^2.1"
+	},
+	"minimum-stability": "dev",
+	"prefer-stable": true,
+	"config": {
+		"platform": {
+			"php": "8.1"
+		},
+		"allow-plugins": {
+			"phpdocumentor/shim": true
+		}
+	},
+	"scripts": {
+		"unittest": "vendor/bin/phpunit --testsuite unit",
+		"coverage": "vendor/bin/phpunit --testsuite unit --coverage-text --coverage-clover=build/logs/clover.xml",
+		"integration": "tests/integration/run-install-test.sh"
+	},
+	"extra": {
+		"prado": {
+			"bootstrap": "Prado\\Util\\Bayesian\\TBayesianModule",
+			"error-messages": "config/errorMessages.txt",
+			"class-map": "config/prado-bayesian-classes.json"
+		}
+	}
+}
