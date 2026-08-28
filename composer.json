@@ -41,14 +41,14 @@
 	],
 	"require": {
 		"php": ">=8.1.0",
-		"ext-mbstring": "*"
+		"ext-mbstring": "*",
+		"pradosoft/prado": "^4.4@dev"
 	},
 	"suggest": {
 		"ext-pdo": "Required by Prado\\Util\\Bayesian\\Storage\\TSqlBayesianStorage for SQL-backed training persistence.",
 		"ext-redis": "Required by Prado\\Util\\Bayesian\\Storage\\TRedisBayesianStorage for Redis-backed training persistence."
 	},
 	"require-dev": {
-		"pradosoft/prado": "^4.4 || dev-master",
 		"phpunit/phpunit": "^10",
 		"phpdocumentor/shim": "^3",
 		"friendsofphp/php-cs-fixer": "^3.94",
