@@ -47,7 +47,7 @@
 		"phpunit/phpunit": "^10",
 		"phpdocumentor/shim": "^3",
 		"friendsofphp/php-cs-fixer": "^3.94",
-		"phpstan/phpstan": "^2.1"
+		"phpstan/phpstan": "^2.1.22"
 	},
 	"minimum-stability": "dev",
 	"prefer-stable": true,
