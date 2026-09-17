@@ -154,6 +154,18 @@ interface IBayesianVocabulary
 	public function addDocument(string $category, array $tokens): void;
 
 	/**
+	 * Withdraws one training document from the named category: the exact inverse of
+	 * {@see addDocument()} for the same tokens.  Every count stops at zero, a token that no
+	 * document contains any more leaves the vocabulary, and a category left with no documents
+	 * is removed, so a vocabulary that added and then removed a document holds what it held
+	 * before.  Withdrawing from a category that does not exist changes nothing.
+	 * @param string $category The category name.
+	 * @param string[] $tokens The document's tokens (with multiplicity).
+	 * @since 0.2.0
+	 */
+	public function removeDocument(string $category, array $tokens): void;
+
+	/**
 	 * Replaces the vocabulary wholesale, as {@see \Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier::load()}
 	 * does when restoring a saved model.
 	 *

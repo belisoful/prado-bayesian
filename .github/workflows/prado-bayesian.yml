@@ -1,14 +1,28 @@
 name: PRADO Bayesian Extension
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    # The package tracks PRADO's master branch (dev-master), so a change there can break a
+    # build that no commit here triggered.  Once a week catches that.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
 jobs:
   composerext:
-    name: Bayesian
+    name: Bayesian (PHP ${{ matrix.php-versions }}${{ matrix.dependencies == 'lowest' && ', lowest deps' || '' }})
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        php-versions: ['8.1', '8.2', '8.3']
+        php-versions: ['8.1', '8.2', '8.3', '8.4', '8.5']
+        dependencies: ['highest']
+        include:
+          # The oldest versions the constraints allow, on the oldest PHP: what a consumer with
+          # a conservative lock file gets.
+          - php-versions: '8.1'
+            dependencies: 'lowest'
 
     services:
       redis:
@@ -72,9 +86,9 @@ jobs:
           extensions: ctype, dom, intl, json, mbstring, pcre, pdo, pdo_sqlite, pdo_mysql, pdo_pgsql, sqlite3, redis, sockets, spl, zlib
           tools: cs2pr
           # Xdebug costs a lot of run time, so only the leg that measures coverage gets it.
-          coverage: ${{ matrix.php-versions == '8.3' && 'xdebug' || 'none' }}
+          coverage: ${{ matrix.php-versions == '8.3' && matrix.dependencies == 'highest' && 'xdebug' || 'none' }}
 
-      - name: Validate composer.json and composer.lock
+      - name: Validate composer.json
         run: composer validate --strict
 
       - name: Get composer cache directory
@@ -85,31 +99,43 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: ${{ runner.os }}-composer-
+          # composer.lock is not committed, so the key hashes composer.json instead.
+          key: ${{ runner.os }}-php${{ matrix.php-versions }}-${{ matrix.dependencies }}-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php-versions }}-${{ matrix.dependencies }}-composer-
 
-      # No repository juggling: composer.json declares the framework's VCS repository, so this
-      # resolves pradosoft/prado from its master branch exactly as a fresh contributor would.
+      # pradosoft/prado resolves straight from Packagist (dev-master, aliased 4.4.x-dev); no
+      # repository entry is needed or declared.
       - name: Install Composer dependencies
+        if: matrix.dependencies == 'highest'
         run: composer install --no-progress --prefer-dist --optimize-autoloader
 
-      - name: Validate code syntax using php-cs-fixer
-        run: vendor/bin/php-cs-fixer fix -vvv --dry-run --using-cache=no --format=checkstyle src/ | cs2pr
+      - name: Install the lowest Composer dependencies the constraints allow
+        if: matrix.dependencies == 'lowest'
+        run: composer update --no-progress --prefer-dist --prefer-lowest --prefer-stable --optimize-autoloader
 
-      - name: Validate code using phpstan
-        run: vendor/bin/phpstan analyse --error-format=checkstyle | cs2pr
+      - name: Compile check (composer lint)
+        run: composer lint
 
-      - name: Run Unit Tests
+      - name: Validate code style using php-cs-fixer (composer cs)
+        if: matrix.dependencies == 'highest'
+        run: vendor/bin/php-cs-fixer fix -vvv --dry-run --using-cache=no --format=checkstyle | cs2pr
+
+      - name: Validate code using phpstan (composer stan)
+        if: matrix.dependencies == 'highest'
+        run: vendor/bin/phpstan analyse --memory-limit=512M --error-format=checkstyle | cs2pr
+
+      - name: Run Unit Tests (composer unittest)
         run: composer unittest
 
       - name: Measure coverage
-        if: matrix.php-versions == '8.3'
+        if: matrix.php-versions == '8.3' && matrix.dependencies == 'highest'
         env:
           XDEBUG_MODE: coverage
         run: |
           composer coverage
-          # 92% is reachable without Redis; the Redis suite pushes it higher here. Raise this
-          # floor to just under the figure the run reports once it has settled.
+          # The floor is deliberately below the achievable figure; the remainder is defensive
+          # guards the public API cannot reach (see README).  Raise it only when new tests
+          # support it.
           php tests/test_tools/check-coverage.php build/logs/clover.xml 93
 
   integration:

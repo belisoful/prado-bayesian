@@ -18,10 +18,13 @@ namespace Belisoful\Prado\Util\Bayesian;
  * path increments these counts; the classification path reads them through log-probabilities
  * with Laplace smoothing.
  *
- * The category is mutated by {@see addDocument()} and {@see addToken()} during training; the
- * read-only views are {@see getDocumentCount()}, {@see getTokenCount()}, {@see getTotalTokens()},
- * and {@see getVocabularySize()}.  Callers should not assume the underlying maps are stable
- * across training.
+ * The category is mutated by {@see addDocument()} and {@see addToken()} during training, and by
+ * their inverses {@see removeDocument()} and {@see removeToken()} when a document is withdrawn;
+ * the read-only views are {@see getDocumentCount()}, {@see getTokenCount()},
+ * {@see getTotalTokens()}, and {@see getVocabularySize()}.  Every count is clamped at zero, and a
+ * token whose count reaches zero leaves its map, so a category that trained and then untrained
+ * a document holds exactly what it held before.  Callers should not assume the underlying maps
+ * are stable across training.
  *
  * @author Brad Anderson <belisoful@icloud.com>
  * @since 0.1.0
@@ -162,6 +165,62 @@ class TBayesianCategory
 	{
 		$this->_documentTokenCounts[$token] = ($this->_documentTokenCounts[$token] ?? 0) + 1;
 		$this->_generation++;
+	}
+
+	/**
+	 * Decrements the document count by one, stopping at zero.
+	 * @since 0.2.0
+	 */
+	public function removeDocument(): void
+	{
+		if ($this->_documentCount > 0) {
+			$this->_documentCount--;
+		}
+		$this->_generation++;
+	}
+
+	/**
+	 * Decrements the count of one token by the supplied amount (default 1), stopping at zero,
+	 * and takes the amount actually removed off the total.  A token whose count reaches zero
+	 * leaves the map; a token the category never saw is a no-op.
+	 * @param string $token The token.
+	 * @param int $count The decrement; clamped to >= 1.
+	 * @since 0.2.0
+	 */
+	public function removeToken(string $token, int $count = 1): void
+	{
+		if ($count < 1) {
+			$count = 1;
+		}
+		$this->_generation++;
+		$current = $this->_tokenCounts[$token] ?? 0;
+		if ($current === 0) {
+			return;
+		}
+		$removed = min($current, $count);
+		$this->_totalTokens = max(0, $this->_totalTokens - $removed);
+		if ($current - $removed === 0) {
+			unset($this->_tokenCounts[$token]);
+		} else {
+			$this->_tokenCounts[$token] = $current - $removed;
+		}
+	}
+
+	/**
+	 * Decrements the number of documents containing a token by one, stopping at zero; a token
+	 * whose count reaches zero leaves the map.
+	 * @param string $token The token.
+	 * @since 0.2.0
+	 */
+	public function removeTokenDocument(string $token): void
+	{
+		$this->_generation++;
+		$current = $this->_documentTokenCounts[$token] ?? 0;
+		if ($current <= 1) {
+			unset($this->_documentTokenCounts[$token]);
+			return;
+		}
+		$this->_documentTokenCounts[$token] = $current - 1;
 	}
 
 	/**

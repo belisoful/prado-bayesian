@@ -311,19 +311,58 @@ class TComplementNaiveBayesTest extends PHPUnit\Framework\TestCase
 		}
 	}
 
-	public function testSingleCategoryHasNoDefinedComplementScore()
+	public function testSingleCategoryScoresNeutrally()
 	{
 		// Complement NB scores a category against everything else; with only one category the
-		// complement is empty, its weight vector normalizes to zero, and no score is defined.
+		// complement is empty and, once the vocabulary holds a single token, the weight vector
+		// normalizes to zero.  That is an absence of evidence, so the one category still wins
+		// with all the mass — exactly as it does as soon as a second token is trained.
 		$classifier = new TComplementNaiveBayes();
 		$classifier->trainOne('spam', 'free');
 		self::assertTrue($classifier->getIsTrained());
-		self::assertSame([], $classifier->score('free'));
-		try {
-			$classifier->classify('free');
-			self::fail('expected exception');
-		} catch (\Prado\Exceptions\TInvalidOperationException $e) {
-			self::assertSame('bayesian_classifier_score_undefined', $e->getErrorCode());
+		self::assertSame(['spam' => 1.0], $classifier->score('free'));
+		self::assertSame('spam', $classifier->classify('free'));
+		$classifier->trainOne('spam', 'offer');
+		self::assertSame(['spam' => 1.0], $classifier->score('free'));
+	}
+
+	public function testACategoryWithNoDiscriminatingTokensScoresNeutrallyNotUndefined()
+	{
+		// When every token's complement ratio is exactly 1 the category's weight norm is 0: no
+		// token distinguishes it from the rest.  That is no evidence, not minus infinity — a
+		// trained model must still classify.
+		$classifier = new TComplementNaiveBayes();
+		$classifier->trainOne('x', ['aa']);
+		$classifier->trainOne('y', ['aa']);
+		$scores = $classifier->score(['aa']);
+		self::assertSame(['x' => 0.5, 'y' => 0.5], $scores);
+		self::assertSame('x', $classifier->classify(['aa']));
+
+		// A category trained only on empty documents alongside a real one.
+		$classifier = new TComplementNaiveBayes();
+		$classifier->trainOne('empty', []);
+		$classifier->trainOne('full', ['cc']);
+		$scores = $classifier->score(['cc']);
+		self::assertCount(2, $scores);
+		self::assertEqualsWithDelta(1.0, array_sum($scores), 1e-12);
+		self::assertSame('empty', $classifier->classify(['cc']), 'a tie keeps the first category, as in every variant');
+	}
+	public function testUntrainRestoresTheScoresOfTheSmallerModel()
+	{
+		// The cached aggregates depend on every count; untraining must invalidate them exactly
+		// as training does, so the scores equal a model that never saw the document.
+		$reference = new TComplementNaiveBayes();
+		$reference->trainOne('spam', 'cheap pills buy now');
+		$reference->trainOne('ham', 'team meeting agenda');
+		$full = new TComplementNaiveBayes();
+		$full->trainOne('spam', 'cheap pills buy now');
+		$full->trainOne('ham', 'team meeting agenda');
+		$full->score('cheap meeting');   // warm the caches
+		$full->trainOne('spam', 'lottery prize winner');
+		$full->score('cheap meeting');
+		$full->untrainOne('spam', 'lottery prize winner');
+		foreach (['cheap meeting', 'lottery', 'agenda now'] as $probe) {
+			self::assertSame($reference->score($probe), $full->score($probe), $probe);
 		}
 	}
 }

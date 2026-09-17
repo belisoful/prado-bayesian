@@ -91,4 +91,34 @@ class TBayesianCategoryTest extends PHPUnit\Framework\TestCase
 		self::assertSame(0, $cat->getDocumentCount());
 		self::assertSame(0, $cat->getTotalTokens());
 	}
+	public function testRemoveDocumentAndTokensClampAtZeroAndDropEmptyEntries()
+	{
+		$category = new \Belisoful\Prado\Util\Bayesian\TBayesianCategory('spam');
+		$category->addDocument();
+		$category->addToken('cheap', 3);
+		$category->addTokenDocument('cheap');
+		$generation = $category->getGeneration();
+
+		$category->removeToken('cheap', 2);
+		self::assertSame(1, $category->getTokenCount('cheap'));
+		self::assertSame(1, $category->getTotalTokens());
+		$category->removeToken('cheap', 5);
+		self::assertSame(0, $category->getTokenCount('cheap'), 'clamped at zero');
+		self::assertSame(0, $category->getTotalTokens());
+		self::assertSame([], $category->getTokenCounts(), 'a token at zero leaves the map');
+		$category->removeToken('never', 1);
+		self::assertSame([], $category->getTokenCounts(), 'an unknown token is a no-op');
+
+		$category->removeTokenDocument('cheap');
+		self::assertSame(0, $category->getTokenDocumentCount('cheap'));
+		self::assertSame([], $category->getTokenDocumentCounts());
+		$category->removeTokenDocument('cheap');
+		self::assertSame(0, $category->getTokenDocumentCount('cheap'));
+
+		$category->removeDocument();
+		self::assertSame(0, $category->getDocumentCount());
+		$category->removeDocument();
+		self::assertSame(0, $category->getDocumentCount(), 'clamped at zero');
+		self::assertGreaterThan($generation, $category->getGeneration(), 'every removal is a mutation');
+	}
 }

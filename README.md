@@ -2,12 +2,15 @@
 
 Bayesian classification and recommendation for the [PRADO PHP Framework](https://github.com/pradosoft/prado) (version 4.4+), implemented as a PRADO 4 extension.
 
-> **Pre-release (0.1.0).** This extension targets the PRADO `master` branch (the upcoming 4.4 release), which adds the `extra.prado.bootstrap` / `error-messages` / `class-map` Composer plugin hooks it relies on. It does not work with PRADO 4.3.x; because it depends on PRADO's `master` branch (`^4.4@dev`), your application needs `minimum-stability: dev` (see [Installation](#installation)). Public APIs may still change before 1.0.0.
+> **Pre-release (0.x).** This extension targets the PRADO `master` branch (the upcoming 4.4 release), which adds the `extra.prado.bootstrap` / `error-messages` / `class-map` Composer plugin hooks it relies on. It does not work with PRADO 4.3.x; because it depends on PRADO's `master` branch (`^4.4@dev`), your application needs `minimum-stability: dev` (see [Installation](#installation)). See [Versioning and compatibility](#versioning-and-compatibility) for what may change before 1.0.0.
 
-The module is designed for two common use cases out of the box:
+The module is designed for three common use cases out of the box:
 
-- **Spam filtering** — train a Naive Bayes classifier on labeled text and classify new documents with calibrated probability scores.
-- **Recommendation** — score items for a user from observed item/category interactions, ranking by the posterior probability the user is in the "likes this" class.
+- **Spam filtering** — train a Naive Bayes classifier on labeled text and classify new documents, getting the winning category and a score per category.
+- **Tagging** — train documents under any number of labels and get an independent probability for every label (`php` *and* `security`, or nothing).
+- **Recommendation** — score items for a user from observed item/category interactions, ranking by the score of the "likes this" class.
+
+Training is incremental and reversible: `trainOne()` adds a document, `untrainOne()` withdraws it exactly. The raw scores are normalized Naive Bayes log-posteriors — a ranking that sums to one, **not calibrated probabilities**, because Naive Bayes is overconfident by construction. Fit a calibration on held-out documents (`calibrate()`, temperature scaling for a classifier and Platt scaling per label for a tagger) and the scores become probability estimates that are saved with the model; see [Concepts](docs/concepts.md#calibration).
 
 The classifier, tokenizer, and storage are decoupled, so swapping in a different model family, token strategy, or persistence layer is a one-line configuration change.
 
@@ -26,7 +29,7 @@ This README is the quick start. Deeper material lives in [`docs/`](docs/README.m
 
 | Requirement | Scope | Purpose |
 |---|---|---|
-| PHP 8.1 or higher | required | Language runtime |
+| PHP 8.1 to 8.5 | required | Language runtime (each version is in CI; 8.4 and 8.5 run deprecation-free) |
 | `ext-mbstring` | required | Multibyte-safe tokenization (every tokenizer uses `mb_*`) |
 | PRADO Framework `^4.4@dev` | required (Composer installs it) | `TComponent`, `TService`, `TModule`, `TDbPropertiesTrait`, and the `extra.prado.*` Composer plugin hooks |
 | `ext-pdo` | suggested | Required by `TSqlBayesianStorage` (via Prado's `TDbConnection`) for SQL-backed persistence |
@@ -86,8 +89,8 @@ The package's `config/` folder holds what PRADO's third-party plugin support rea
 | Class | Namespace | Role |
 |---|---|---|
 | `TBayesianModule` | `Belisoful\Prado\Util\Bayesian` | The `extra.prado.bootstrap` module; owns the configured default classifier |
-| `TBayesianService` | `Belisoful\Prado\Web\Services` | A `TService` exposing classification and recommendation over the PRADO service pipeline (HTTP request) |
-| `IBayesianClassifier` | `Belisoful\Prado\Util\Bayesian\Classifier` | The classifier contract: `train()`, `trainOne()`, `classify()`, `score()`, `save()`, `load()` |
+| `TBayesianService` | `Belisoful\Prado\Web\Services` | A `TService` exposing classification and recommendation over the PRADO service pipeline (HTTP request); opt-in access control through PRADO authorization rules and permissions |
+| `IBayesianClassifier` | `Belisoful\Prado\Util\Bayesian\Classifier` | The classifier contract: `train()`, `trainOne()`, `untrain()`, `untrainOne()`, `classify()`, `score()`, `save()`, `load()` |
 | `TNaiveBayesClassifier` | `Belisoful\Prado\Util\Bayesian\Classifier` | The classic Naive Bayes (multinomial event model with Laplace smoothing) — the default spam filter |
 | `TMultinomialNaiveBayes` | `Belisoful\Prado\Util\Bayesian\Classifier` | Multinomial Naive Bayes; counts token occurrences per category |
 | `TBernoulliNaiveBayes` | `Belisoful\Prado\Util\Bayesian\Classifier` | Bernoulli Naive Bayes; tracks token presence/absence per document |
@@ -106,16 +109,21 @@ The package's `config/` folder holds what PRADO's third-party plugin support rea
 | `TBayesianCategory` | `Belisoful\Prado\Util\Bayesian` | One category: its name, document count, and token counts |
 | `TBayesianTrainingSet` | `Belisoful\Prado\Util\Bayesian` | An iterable labeled training set: maps categories to tokenized documents |
 | `TBayesianModelConverter` | `Belisoful\Prado\Util\Bayesian` | Rewrites a whole-payload model into a per-token backend without retraining |
+| `IBayesianTagger` / `TBayesianTagger` | `Belisoful\Prado\Util\Bayesian` | Multi-label tagging: one-versus-rest Naive Bayes over one shared model, an independent probability per label |
+| `TBayesianPayload` | `Belisoful\Prado\Util\Bayesian` | Typed reads out of decoded payloads and configuration arrays |
+| `TTemperatureScaling` | `Belisoful\Prado\Util\Bayesian\Calibration` | Calibrates a classifier's scores into probabilities with one fitted temperature |
+| `TPlattScaling` | `Belisoful\Prado\Util\Bayesian\Calibration` | Calibrates a binary decision value (a tagger's per-label log-odds) with a fitted logistic curve |
 | `TFIdf` | `Belisoful\Prado\Util\Bayesian\Math` | Term-frequency × inverse-document-frequency weighting |
 | `TBayesMath` | `Belisoful\Prado\Util\Bayesian\Math` | Log-space arithmetic helpers used by the classifiers to avoid underflow |
 | `TConfusionMatrix` | `Belisoful\Prado\Util\Bayesian\Evaluation` | Confusion matrix for evaluating a classifier against a labeled set |
 | `TBayesianMetrics` | `Belisoful\Prado\Util\Bayesian\Evaluation` | Precision, recall, F1, accuracy, macro/micro averages |
+| `TCalibrationMetrics` | `Belisoful\Prado\Util\Bayesian\Evaluation` | Log loss, Brier score and expected calibration error, to judge a calibration on held-out data |
 | `IBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | The persistence seam for a trained model |
 | `IBayesianTokenStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | A storage backend that also serves a model per token, for models larger than a process |
 | `TMemoryBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | Process-local in-memory storage (default; no I/O) |
-| `TFileBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | JSON file storage (good for development, small models, single host) |
-| `TSqlBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | SQL-backed storage via `TDbConnection` (SQLite, MySQL, PostgreSQL); whole-payload or per-token (`Mode`); connection through `TDbPropertiesTrait` |
-| `TRedisBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | Redis-backed storage for shared hosts; whole-payload or per-token (`Mode`), with atomic `HINCRBY` incremental training (requires `ext-redis`) |
+| `TFileBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | JSON file storage (good for development, small models, single host, single writer) |
+| `TSqlBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | SQL-backed storage via `TDbConnection` (SQLite, MySQL, PostgreSQL); whole-payload or per-token (`Mode`); per-token training is an atomic increment, safe for concurrent writers; connection through `TDbPropertiesTrait` |
+| `TRedisBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | Redis-backed storage for shared hosts; whole-payload or per-token (`Mode`); per-token training is a Lua script of `HINCRBY` increments, safe for concurrent writers (requires `ext-redis`) |
 | `IBayesianRecommender` | `Belisoful\Prado\Util\Bayesian` | The recommender contract: `recommend()` for a user/item context |
 | `TBayesianRecommender` | `Belisoful\Prado\Util\Bayesian` | A probabilistic recommender built on top of any `IBayesianClassifier` |
 
@@ -156,7 +164,7 @@ The layers stack cleanly:
 - **Tokenizer** — `IBayesianTokenizer` is the seam between text and features. Default `TWordTokenizer` is good enough for spam filtering; swap in `TNGramTokenizer` for language-agnostic content or `TRegexTokenizer` for structured input.
 - **Vocabulary & categories** — `IBayesianVocabulary` is the statistics the classifier scores against, behind an interface so they need not all be resident: `TBayesianVocabulary` holds the whole model, `TLazyBayesianVocabulary` reads a document's tokens from storage per classification. `TBayesianCategory` represents one class. `TBayesianTrainingSet` is the labeled corpus in training-time form.
 - **Classifiers** — All implement `IBayesianClassifier` and accept any tokenizer + storage. `TNaiveBayesClassifier` is the canonical spam filter and the base class of the other three; `TMultinomialNaiveBayes`, `TBernoulliNaiveBayes`, and `TComplementNaiveBayes` override only the likelihood, so switching event model is a one-line change. Each writes a distinct `kind` marker into its saved model, so several variants can share one storage backend safely.
-- **Storage** — `IBayesianStorage` persists a trained model. `TMemoryBayesianStorage` is the no-I/O default; `TFileBayesianStorage` writes JSON; `TSqlBayesianStorage` uses Prado's `TDbConnection`/`TDbCommand` for SQL-backed persistence (SQLite, MySQL, PostgreSQL), configured through `TDbPropertiesTrait` like any other Prado database component, and can store a model per token (`Mode="token"`) so it is bounded by the database rather than by PHP memory; `TRedisBayesianStorage` scales across processes and hosts via Redis, and like the SQL backend can store a model per token (`Mode="token"`), though there the model lives in Redis's RAM rather than on disk.
+- **Storage** — `IBayesianStorage` persists a trained model. `TMemoryBayesianStorage` is the no-I/O default; `TFileBayesianStorage` writes JSON; `TSqlBayesianStorage` uses Prado's `TDbConnection`/`TDbCommand` for SQL-backed persistence (SQLite, MySQL, PostgreSQL), configured through `TDbPropertiesTrait` like any other Prado database component, and can store a model per token (`Mode="token"`) so it is bounded by the database rather than by PHP memory; `TRedisBayesianStorage` scales across processes and hosts via Redis, and like the SQL backend can store a model per token (`Mode="token"`), though there the model lives in Redis's RAM rather than on disk. **Whole-payload storage is single-writer** (a save replaces the model); **per-token storage is multi-writer** (training is an atomic increment), which is what a model trained from concurrent web requests and workers needs. See [Storage → Concurrency](docs/storage.md#concurrency).
 - **Recommender** — `TBayesianRecommender` reuses the classifier: train it on user/item interactions with a positive and a negative label (`PositiveCategory` defaults to `liked`), then ask it to rank candidate items.
 - **Module & service** — `TBayesianModule` is the `extra.prado.bootstrap` entry point that owns the configured classifiers and storage; one module can hold several models over one backend. `TBayesianService` exposes a classifier and the recommender over the PRADO service pipeline (HTTP), sourcing its classifier from the module.
 
@@ -274,15 +282,16 @@ $module = Prado::getApplication()->getModule('bayesian');
 $label  = $module->getClassifier()->classify($text);
 ```
 
-`TBayesianService` is read-only over HTTP (no training or deletion) and answers with JSON. With the service id `bayesian`:
+`TBayesianService` is read-only over HTTP (no training or deletion) and answers with JSON. **It enforces no access control by default** — restrict it with PRADO authorization rules (an `<authorization>` element of the service) or a `TPermissionsManager` before exposing it; see [Configuration → Access control](docs/configuration.md#access-control). With the service id `bayesian`:
 
 | Request | Response |
 |---|---|
 | `?bayesian&text=Free+pills` (or `&action=classify`) | `{"category":"spam","scores":{"spam":0.98,"ham":0.02}}` |
 | `?bayesian&text=Free+pills&category=spam` | adds `"isSpam": true` |
 | `?bayesian&action=recommend&context[]=red+shoes&candidates[]=red+hat&candidates[]=blue+hat` | `{"scores":{"red hat":0.7,"blue hat":0.4}}` (always a JSON object, highest first) |
+| `?bayesian&action=tag&text=escape+the+query+parameters` | `{"tags":{"php":0.91,"security":0.78},"calibrated":false}` (labels above `TagThreshold`, highest first, at most `MaxTags`) |
 
-Errors are JSON with an HTTP status: `400` `{"error":"bayesian_service_text_required",...}` for a missing/malformed parameter or unknown action, `413` when `text` exceeds `MaxTextLength` (default 65536 bytes, `0` = unlimited), and `503` `bayesian_classifier_not_trained` when no model has been trained yet. `ModuleID` selects which `TBayesianModule` supplies the classifier (default: the first one registered).
+Errors are JSON with an HTTP status: `400` `{"error":"bayesian_service_text_required",...}` for a missing/malformed parameter or unknown action, `401`/`403` when access is refused, `413` when `text`, the joined `context` or a candidate exceeds `MaxTextLength` (default 65536 bytes, `0` = unlimited) or more than `MaxCandidates` (default 100) candidates are sent, and `503` `bayesian_classifier_not_trained` when no model has been trained yet. `ModuleID` selects which `TBayesianModule` supplies the classifier (default: the first one registered).
 
 ### Multiple models
 
@@ -336,31 +345,22 @@ $storage = $this->getApplication()->getModule('bayesian')->getStorage();
 
 **In the default `payload` mode, a backend loads the whole model.** The model is one JSON unit —
 one file, one row, one Redis key — and `load()` decodes all of it into PHP arrays before the
-first classification. The figures below are for that mode, which is the right choice whenever the
-model fits comfortably in a request.
+first classification. That mode is the right choice whenever the model fits comfortably in a
+request and has one writer.
 
 `TSqlBayesianStorage` and `TRedisBayesianStorage` also offer `Mode="token"`, where the model is
 stored per token and a classification reads only the document's own tokens — so a loaded model
-costs kilobytes of PHP memory regardless of its size (a 100,000-token SQL model loads in 0.7 ms
-and 0.2 MB against 106 ms and 44 MB for the payload form). See
-[Storage backends](docs/storage.md#model-size-and-memory) for when that trade is worth it. The
-sizing below is what the whole model costs when it is resident.
+costs kilobytes of PHP memory regardless of its size, loading it takes well under a millisecond
+where the payload form takes tens of milliseconds and tens of megabytes, and training one
+document writes that document's rows instead of re-serializing the model. The figures, and the
+script that reproduces them on your machine (`composer benchmark`), are in
+[Storage backends](docs/storage.md#model-size-and-memory).
 
-Measured on this codebase, with every category having seen the whole vocabulary:
-
-| Vocabulary | Categories | JSON payload | Loaded in PHP |
-|---:|---:|---:|---:|
-| 5,000 | 2 | 361 KB | 1.6 MB |
-| 5,000 | 10 | 1.5 MB | 6.6 MB |
-| 20,000 | 2 | 1.5 MB | 6.3 MB |
-| 20,000 | 10 | 6.2 MB | 26.3 MB |
-| 100,000 | 2 | 7.6 MB | 25.0 MB |
-
-Two rules of thumb follow. The payload runs **30–40 bytes per token-per-category**, because each
-category stores its own occurrence and document counts for every token it has seen, plus one
-corpus-wide document-frequency map. And the decoded PHP structure is **roughly 3–4× the JSON**,
-since PHP's hash tables cost far more per entry than the text does. Budget the sum of both:
-`json_decode()` holds the string and the growing array at the same time.
+The rules of thumb for payload mode: the payload runs **30–40 bytes per token-per-category**,
+because each category stores its own occurrence and document counts for every token it has seen,
+plus one corpus-wide document-frequency map; and the decoded PHP structure is **roughly 3–4× the
+JSON**, since PHP's hash tables cost far more per entry than the text does. Budget the sum of
+both: `json_decode()` holds the string and the growing array at the same time.
 
 Size therefore scales with vocabulary **times** categories, not vocabulary alone — ten categories
 over the same words is five times the model of two. Trimming the vocabulary is the effective
@@ -377,6 +377,69 @@ generate far more distinct features.
 In every case PHP's `memory_limit` binds long before the backend's own ceiling: a 64 MB payload
 needs roughly 200–250 MB of PHP memory to decode and hold. If you need models larger than a
 process can hold, the fix is a smaller feature space — not a different backend.
+
+### Untraining
+
+Every training call has an exact inverse. A document that was trained and then untrained leaves
+no trace: the counts return to what they were, a token no document contains any more leaves the
+vocabulary, and a category left without documents disappears.
+
+```php
+$classifier->trainOne('spam', 'cheap watches');
+$classifier->untrainOne('spam', 'cheap watches');   // as if it had never been trained
+$classifier->untrain($trainingSet);                 // withdraws a whole set
+```
+
+Untraining works against every storage layout, including per-token models trained from many
+processes at once (the deltas are atomic decrements, clamped at zero). Pass the document exactly
+as it was trained — the same text through the same tokenizer, or the same pre-tokenized list —
+or the counts of the tokens that differ will be off by one.
+
+### Calibrated probabilities
+
+`score()` normalizes the Naive Bayes log-posteriors, which is a ranking, not a probability: a
+document that is 70% likely to be spam routinely scores 0.99. Fit a calibration on labeled
+documents the model was **not** trained on, and `score()` returns probability estimates from then
+on; the calibration is saved with the model.
+
+```php
+$classifier->calibrate($heldOutSet);            // fits a TTemperatureScaling and installs it
+$classifier->getIsCalibrated();                 // true
+$classifier->score('cheap pills');              // now calibrated; classify() is unchanged
+$classifier->logScores('cheap pills');          // the raw log-posteriors, always available
+$classifier->getCalibration()->getTemperature();
+```
+
+Judge the result with `TCalibrationMetrics` on a *third* set of documents: `distributionLogLoss()`
+and `distributionCalibrationError()` before and after. Refit after substantial further training.
+
+### Multi-label tagging
+
+A `TBayesianTagger` trains a document under each of its labels and returns an independent
+probability for every label, so a document can carry several tags or none. It is one-versus-rest
+Naive Bayes over one shared model, so it costs one write per label plus one, and every storage
+backend and both layouts work unchanged.
+
+```php
+use Belisoful\Prado\Util\Bayesian\TBayesianTagger;
+
+$tagger = new TBayesianTagger();
+$tagger->getClassifier()->setStorage($storage);
+$tagger->getClassifier()->setName('post-tags');
+$tagger->train(['php', 'security'], 'Validate every request parameter before it reaches the SQL query');
+$tagger->train(['cooking'], 'Simmer the sauce for twenty minutes');
+$tagger->train([], 'The meeting moved to Tuesday');          // a negative example for every label
+
+$tagger->probabilities('Escape the query parameters');   // ['php' => 0.91, 'security' => 0.78, 'cooking' => 0.04]
+$tagger->tag('Escape the query parameters');             // ['php' => 0.91, 'security' => 0.78] — above Threshold, highest first
+$tagger->untrain(['cooking'], 'Simmer the sauce for twenty minutes');
+$tagger->calibrate($heldOutExamples);                     // a TPlattScaling per label, saved with the model
+$tagger->getClassifier()->save();
+```
+
+`Threshold` (default 0.5) and `MaxTags` (default unlimited) shape `tag()`. The service exposes
+the same as `action=tag`. The underlying classifier's own `classify()` is not meaningful for a
+tagged model — score through the tagger.
 
 ### Recommendation
 
@@ -533,13 +596,25 @@ to separate them — real corpora run to thousands of documents and separate far
 perfect scores on four held-out documents mean nothing statistically; they show the evaluation
 wiring works, not that the model is good.
 
+## Versioning and compatibility
+
+The package follows [Semantic Versioning](https://semver.org/) and is pre-1.0. Until 1.0.0:
+
+- a **minor** release (0.x → 0.y) may change public APIs, stored formats and defaults; every
+  such change is listed in [CHANGELOG.md](CHANGELOG.md) with a migration note;
+- a **patch** release changes behavior only to fix a bug, and never changes a stored format;
+- stored models carry a `formatVersion` (payloads) and a `layoutVersion` (per-token metadata), so
+  a release that changes a format can upgrade or refuse an older model instead of misreading it,
+  and a release always reads the previous version's models.
+
+From 1.0.0 the usual guarantee applies: only a major release may break compatibility.
+
 ## Development
 
-PRADO 4.4 is not on Packagist yet, so `composer.json` declares the framework's GitHub
-repository and requires `pradosoft/prado` at `^4.4@dev`, which resolves through the branch alias
-in PRADO's own `composer.json` (`dev-master` → `4.4.x-dev`) — `composer install` needs no
-further setup. To develop against a local PRADO checkout instead, add a path repository to your
-working copy and leave it uncommitted:
+`composer.json` requires `pradosoft/prado` at `^4.4@dev`, which resolves straight from Packagist
+through the branch alias in PRADO's own `composer.json` (`dev-master` → `4.4.x-dev`) —
+`composer install` needs no repository entry and no further setup. To develop against a local
+PRADO checkout instead, add a path repository to your working copy and leave it uncommitted:
 
 ```sh
 composer config repositories.prado --json \
@@ -549,12 +624,16 @@ composer update pradosoft/prado
 
 ```sh
 composer install
-vendor/bin/phpunit --testsuite unit                  # tests
-vendor/bin/php-cs-fixer fix --dry-run src/           # code style
-vendor/bin/phpstan analyse src/ --memory-limit=512M  # static analysis
-composer coverage                                    # tests with a coverage report
-composer integration                                 # Composer-extension install check
+composer fulltest       # the full check: lint, code style, static analysis (PHPStan level 9), unit tests
+composer unittest       # tests only
+composer fix            # apply the code style
+composer coverage       # tests with a coverage report
+composer integration    # Composer-extension install check
+composer benchmark      # model-size and load-time figures per storage mode
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the backend environment variables and the
+contribution rules, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 `composer integration` builds a throwaway consumer project that requires this package through
 Composer and asserts what `extra.prado` promises: the error-message file resolves `bayesian_*`
@@ -566,19 +645,19 @@ The consumer project is removed when the run passes. A failing run keeps it — 
 so the half-built install can be inspected; `KEEP_WORK_DIR=1` keeps it after a passing run too. A
 work directory passed as the second argument belongs to the caller and is never removed.
 
-The committed `composer.json` carries no machine-specific paths and no framework repository entry: `pradosoft/prado` at `^4.4@dev` resolves straight from Packagist, which is what CI installs from too. A full check before committing is, in order: `php -l`, php-cs-fixer, phpstan, phpunit.
+The committed `composer.json` carries no machine-specific paths and no framework repository entry: `pradosoft/prado` at `^4.4@dev` resolves straight from Packagist, which is what CI installs from too. A full check before committing is, in order: `php -l`, php-cs-fixer, phpstan, phpunit — `composer fulltest`.
 
-Tests cover the math (log-space arithmetic, TF-IDF), tokenizers (word, n-gram, regex, chain, factory round-trips), the classifiers (Naive Bayes and the three variants over tokenized corpora, save/load including the tokenizer), the recommender, the storage backends (including the ascending-order `list()` contract exercised with out-of-order saves, and the framework database-connection contract of `TSqlBayesianStorage`), the module (one classifier and several sharing one backend, each with its own tokenizer), the service, and the metrics. Per-token storage is tested for score-equivalence with the whole-payload layout across every variant, in both SQL and Redis, along with incremental training and the `TBayesianModelConverter`; the Redis field encoding is additionally proven in isolation so it does not rest on a live server being present.
+Tests cover the math (log-space arithmetic, TF-IDF), tokenizers (word, n-gram, regex, chain, factory round-trips), the classifiers (Naive Bayes and the three variants over tokenized corpora, training and untraining, save/load including the tokenizer, the format version and the calibration), the calibrations (temperature and Platt scaling, the calibration metrics), the tagger (independent per-label probabilities, thresholds, untraining, calibration, and per-token equivalence), the recommender, the storage backends (including the ascending-order `list()` contract exercised with out-of-order saves, and the framework database-connection contract of `TSqlBayesianStorage`), the module (one classifier and several sharing one backend, each with its own tokenizer), the service (including its authorization rules, permissions and input limits), and the metrics. Per-token storage is tested for score-equivalence with the whole-payload layout across every variant, in both SQL and Redis, along with incremental training, the layout upgrade from 0.1.0, negative deltas, and the `TBayesianModelConverter`; concurrent training is tested with parallel processes against SQLite, MySQL, PostgreSQL and Redis; the Redis field encoding is additionally proven in isolation so it does not rest on a live server being present; and a package test checks that every source class is in the class map and every error code raised is defined and documented.
 
-SQL tests skip cleanly when `ext-pdo`/`pdo_sqlite` is unavailable; Redis tests skip when `ext-redis` is absent or no server listens on `127.0.0.1:6379`; the MySQL and PostgreSQL round-trips run only when `BAYESIAN_MYSQL_DSN` / `BAYESIAN_PGSQL_DSN` name a reachable server:
+SQL tests skip cleanly when `ext-pdo`/`pdo_sqlite` is unavailable; Redis tests skip when `ext-redis` is absent or no server listens on `127.0.0.1:6379`; the MySQL and PostgreSQL suites run only when `BAYESIAN_MYSQL_DSN` / `BAYESIAN_PGSQL_DSN` name a reachable server:
 
 ```sh
 BAYESIAN_PGSQL_DSN="pgsql:host=127.0.0.1;port=5432;dbname=bayesian_test" BAYESIAN_PGSQL_USER=postgres vendor/bin/phpunit --testsuite unit
 ```
 
-CI provides Redis, MySQL, and PostgreSQL service containers and sets `BAYESIAN_REQUIRE_BACKENDS=1`, which turns each of those skips into a failure — so a green build means every backend really ran, rather than quietly skipping.
+CI runs PHP 8.1 through 8.5 (plus a lowest-dependencies leg; 8.4 and 8.5 have also been run locally with deprecations displayed) against Redis, MySQL, and PostgreSQL service containers with `BAYESIAN_REQUIRE_BACKENDS=1`, which turns each of those skips into a failure — so a green build means every backend really ran, rather than quietly skipping. It also runs weekly, because the package tracks PRADO's `master` branch.
 
-Line coverage is ~87% locally with only SQLite available, and higher in CI where Redis, MySQL, and PostgreSQL all run (`composer coverage`, needs Xdebug or PCOV; CI enforces a 93% floor). The gap between the two figures is almost entirely the Redis backend, which cannot run a line without `ext-redis`.
+Line coverage is ~87% locally with only SQLite available, and higher with Redis, MySQL, and PostgreSQL running (`composer coverage`, needs Xdebug or PCOV; CI enforces a 93% floor). The gap between the two figures is almost entirely the Redis backend, which cannot run a line without `ext-redis`.
 
 Locally the uncovered remainder is, in order of size:
 

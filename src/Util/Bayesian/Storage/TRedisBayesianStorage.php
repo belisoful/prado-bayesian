@@ -10,6 +10,7 @@
 
 namespace Belisoful\Prado\Util\Bayesian\Storage;
 
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Prado\Exceptions\TConfigurationException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Exceptions\TInvalidOperationException;
@@ -26,13 +27,27 @@ use Redis;
  * Two layouts, chosen by {@see setMode Mode}:
  *
  * - **`payload`** (default): the whole model is one JSON string under the model key, with a
- *   Redis set holding the index of model names.  Simple, and right for a model that fits.
- * - **`token`**: the model is spread across a metadata string, a categories hash, and one hash
- *   per token — so a classifier can score a document by reading only that document's tokens
- *   through {@see \Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary}.  The model is then
- *   bounded by Redis rather than by PHP's memory limit, and incremental training uses `HINCRBY`
- *   so a document's counts land atomically with no read-modify-write.  Redis still holds the
- *   whole model in RAM, so this raises the per-process ceiling, not the machine's.
+ *   Redis set holding the index of model names.  Simple, and right for a model that fits and
+ *   has one writer: a save replaces the whole value, so two processes that each load, train
+ *   and save the same model lose one another's documents.
+ * - **`token`**: the model is spread across a metadata string, two category hashes, a token
+ *   set, and one hash per token — so a classifier can score a document by reading only that
+ *   document's tokens through {@see \Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary}.
+ *   The model is then bounded by Redis rather than by PHP's memory limit, and every training
+ *   write is one Lua script applying `HINCRBY` increments, so any number of processes may
+ *   train one model at once without losing counts.  Redis still holds the whole model in RAM,
+ *   so this raises the per-process ceiling, not the machine's.
+ *
+ * The per-token layout carries a `layoutVersion` in the metadata.  A model written by 0.1.0
+ * (layout 1) is upgraded in place on first read; a newer layout than this release understands
+ * is refused with `bayesian_storage_layout_unsupported`.  Scripts touch keys they derive from
+ * the model name, which a Redis Cluster does not permit; use a single Redis instance (or
+ * Sentinel-managed replicas) for this storage.
+ *
+ * Keys are `KeyPrefix` followed by the model name, and the per-token layout appends `:__t:`,
+ * `:__catdocs`, `:__cattoks` and `:__toks` to that.  A model name may therefore contain a
+ * colon but not the sequence `:__`, and two applications sharing one Redis must set both
+ * `KeyPrefix` and `IndexKey` to keep their models apart.
  *
  * The connection is opened lazily on the first call.  Callers can supply a fully configured
  * {@see Redis} instance via {@see setRedis()}, or the host/port/password triple via the matching
@@ -48,6 +63,93 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 
 	/** The model is stored across per-token hashes, read a document at a time. */
 	public const MODE_TOKEN = 'token';
+
+	/**
+	 * The per-token layout this release writes.  Layout 1 (0.1.0) packed each category's
+	 * scalars as one `docs:tokens` string in a single hash and kept the model totals in the
+	 * metadata; layout 2 keeps the scalars as integer hash fields so they can be incremented
+	 * and derives the totals from the keys.
+	 * @since 0.2.0
+	 */
+	public const TOKEN_LAYOUT_VERSION = 2;
+
+	/** @var string The sequence the per-token sub-keys start with; reserved in model names. */
+	private const RESERVED = ':__';
+
+	/** @var int How many tokens one training script call carries. */
+	private const TOKEN_CHUNK = 1000;
+
+	/**
+	 * @var string Applies one document's token deltas.  KEYS[1] is the token set and KEYS[2..]
+	 * the token hashes; ARGV[1] is the category, then (token, count, docCount) per hash.  Every
+	 * counter is clamped at zero after its increment, and a token that no category's documents
+	 * contain any more after a negative document delta is deleted and leaves the token set.
+	 * Returns how many tokens were new.
+	 */
+	private const TOKEN_DELTA_SCRIPT = <<<'LUA'
+		local set = KEYS[1]
+		local cat = ARGV[1]
+		local added = 0
+		for i = 1, #KEYS - 1 do
+			local key = KEYS[i + 1]
+			local base = 1 + (i - 1) * 3
+			if redis.call('SADD', set, ARGV[base + 1]) == 1 then
+				added = added + 1
+			end
+			if redis.call('HINCRBY', key, 'c' .. cat, tonumber(ARGV[base + 2])) < 0 then
+				redis.call('HSET', key, 'c' .. cat, 0)
+			end
+			local docs = tonumber(ARGV[base + 3])
+			if redis.call('HINCRBY', key, 'd' .. cat, docs) < 0 then
+				redis.call('HSET', key, 'd' .. cat, 0)
+			end
+			if docs < 0 then
+				local alive = false
+				local fields = redis.call('HGETALL', key)
+				for j = 1, #fields, 2 do
+					if string.sub(fields[j], 1, 1) == 'd' and tonumber(fields[j + 1]) > 0 then
+						alive = true
+						break
+					end
+				end
+				if not alive then
+					redis.call('DEL', key)
+					redis.call('SREM', set, ARGV[base + 1])
+				end
+			end
+		end
+		return added
+		LUA;
+
+	/**
+	 * @var string Applies one document's category deltas.  KEYS[1] is the document-count hash
+	 * and KEYS[2] the token-total hash; ARGV[1] is the category, ARGV[2] and ARGV[3] the
+	 * deltas.  Both counters are clamped at zero.
+	 */
+	private const CATEGORY_DELTA_SCRIPT = <<<'LUA'
+		if redis.call('HINCRBY', KEYS[1], ARGV[1], tonumber(ARGV[2])) < 0 then
+			redis.call('HSET', KEYS[1], ARGV[1], 0)
+		end
+		if redis.call('HINCRBY', KEYS[2], ARGV[1], tonumber(ARGV[3])) < 0 then
+			redis.call('HSET', KEYS[2], ARGV[1], 0)
+		end
+		return 1
+		LUA;
+
+	/**
+	 * @var string Deletes a per-token model atomically, so a trainer racing the delete cannot
+	 * leave orphan token hashes.  KEYS are the metadata, category, legacy category, token-set
+	 * and index keys; ARGV[1] is the model name and ARGV[2] the token-key prefix.
+	 */
+	private const DELETE_SCRIPT = <<<'LUA'
+		local tokens = redis.call('SMEMBERS', KEYS[5])
+		for _, token in ipairs(tokens) do
+			redis.call('DEL', ARGV[2] .. token)
+		end
+		redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5])
+		redis.call('SREM', KEYS[6], ARGV[1])
+		return #tokens
+		LUA;
 
 	/** @var string Either {@see MODE_PAYLOAD} or {@see MODE_TOKEN}. */
 	private string $_mode = self::MODE_PAYLOAD;
@@ -75,6 +177,9 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 
 	/** @var int The optional Redis database number. */
 	private int $_database = 0;
+
+	/** @var array<string, true> The models this instance has verified to be at the current layout. */
+	private array $_layoutChecked = [];
 
 	/**
 	 * Throws when the redis extension is not loaded.
@@ -126,54 +231,85 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 
 	/**
 	 * Returns the Redis key backing a model: {@see getKeyPrefix KeyPrefix} followed by the
-	 * name.  Unlike the file backend a path separator is harmless here, so only empty names
-	 * and null bytes (which would truncate the key) are rejected.
+	 * name.  A path separator is harmless here, so a name is rejected only when it is empty,
+	 * contains a null byte (which would truncate the key), or contains `:__`, the sequence the
+	 * per-token sub-keys start with — a model named `m:__t:x` would share a key with token `x`
+	 * of model `m`.
 	 * @param string $name The model name.
-	 * @throws TInvalidDataValueException When the name is empty or contains a null byte.
+	 * @throws TInvalidDataValueException When the name is invalid.
 	 * @return string The storage key.
 	 */
 	private function key(string $name): string
 	{
-		if ($name === '' || strpbrk($name, "\0") !== false) {
+		if ($name === '' || strpbrk($name, "\0") !== false || str_contains($name, self::RESERVED)) {
 			throw new TInvalidDataValueException('bayesian_storage_name_invalid', $name);
 		}
 		return $this->_keyPrefix . $name;
 	}
 
 	/**
+	 * Returns the prefix of a model's per-token hash keys; the raw token follows it.  Redis
+	 * keys are binary-safe, so a token needs no escaping — unlike the file backend, where a
+	 * token in a path could escape the directory.
+	 * @param string $name The model name.
+	 * @return string The key prefix.
+	 */
+	private function tokenKeyPrefix(string $name): string
+	{
+		return $this->key($name) . self::RESERVED . 't:';
+	}
+
+	/**
 	 * Returns the hash key holding one token's per-category counts for a model.
-	 *
-	 * The token is part of the Redis key.  Redis keys are binary-safe, so a token needs no
-	 * escaping here — unlike the file backend, where a token in the path could escape the
-	 * directory.
 	 * @param string $name The model name.
 	 * @param string $token The token.
 	 * @return string The Redis key.
 	 */
 	private function tokenKey(string $name, string $token): string
 	{
-		return $this->key($name) . ':__t:' . $token;
+		return $this->tokenKeyPrefix($name) . $token;
 	}
 
 	/**
-	 * Returns the hash key holding a model's per-category scalars.
+	 * Returns the hash key holding a model's per-category document counts.
 	 * @param string $name The model name.
 	 * @return string The Redis key.
 	 */
-	private function categoriesKey(string $name): string
+	private function categoryDocumentsKey(string $name): string
 	{
-		return $this->key($name) . ':__cat';
+		return $this->key($name) . self::RESERVED . 'catdocs';
 	}
 
 	/**
-	 * Returns the set key holding a model's distinct tokens, so a delete can find every
-	 * per-token hash without scanning the keyspace.
+	 * Returns the hash key holding a model's per-category token totals.
+	 * @param string $name The model name.
+	 * @return string The Redis key.
+	 */
+	private function categoryTokensKey(string $name): string
+	{
+		return $this->key($name) . self::RESERVED . 'cattoks';
+	}
+
+	/**
+	 * Returns the hash key layout 1 kept a model's packed category scalars under.
+	 * @param string $name The model name.
+	 * @return string The Redis key.
+	 */
+	private function legacyCategoriesKey(string $name): string
+	{
+		return $this->key($name) . self::RESERVED . 'cat';
+	}
+
+	/**
+	 * Returns the set key holding a model's distinct tokens.  Its cardinality is the
+	 * vocabulary size, and a delete finds every per-token hash through it without scanning
+	 * the keyspace.
 	 * @param string $name The model name.
 	 * @return string The Redis key.
 	 */
 	private function tokenSetKey(string $name): string
 	{
-		return $this->key($name) . ':__toks';
+		return $this->key($name) . self::RESERVED . 'toks';
 	}
 
 	/**
@@ -217,24 +353,13 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 			if (!isset($out[$category])) {
 				$out[$category] = ['count' => 0, 'docCount' => 0];
 			}
-			$out[$category][$type === 'c' ? 'count' : 'docCount'] = (int) $value;
+			$out[$category][$type === 'c' ? 'count' : 'docCount'] = TBayesianPayload::int($value);
 		}
 		return $out;
 	}
 
 	/**
-	 * Packs a category's scalars into the value stored under its field in the categories hash.
-	 * @param int $documentCount The document count.
-	 * @param int $totalTokens The total token occurrences.
-	 * @return string The packed value.
-	 */
-	private static function packCategoryScalars(int $documentCount, int $totalTokens): string
-	{
-		return $documentCount . ':' . $totalTokens;
-	}
-
-	/**
-	 * Unpacks the value written by {@see packCategoryScalars()}.
+	 * Unpacks a layout-1 category value, `<documentCount>:<totalTokens>`.
 	 * @param string $value The packed value.
 	 * @return array{documentCount:int, totalTokens:int} The scalars.
 	 */
@@ -242,9 +367,42 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	{
 		$parts = explode(':', $value, 2);
 		return [
-			'documentCount' => (int) ($parts[0] ?? 0),
+			'documentCount' => (int) $parts[0],
 			'totalTokens' => (int) ($parts[1] ?? 0),
 		];
+	}
+
+	/**
+	 * Encodes the model-level metadata for the per-token layout: the totals are dropped (the
+	 * storage derives them from its keys) and the layout version is added.
+	 * @param array<string, mixed> $meta The metadata.
+	 * @throws TInvalidDataValueException When the metadata cannot be JSON-encoded.
+	 * @return string The JSON.
+	 */
+	private function encodeMeta(array $meta): string
+	{
+		unset($meta['totalDocuments'], $meta['vocabularySize']);
+		$meta['layoutVersion'] = self::TOKEN_LAYOUT_VERSION;
+		$encoded = json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+		if ($encoded === false) {
+			throw new TInvalidDataValueException('bayesian_storage_encode_failed', json_last_error_msg());
+		}
+		return $encoded;
+	}
+
+	/**
+	 * Reads and decodes a model's metadata string.
+	 * @param string $name The model name.
+	 * @return ?array<string, mixed> The metadata, or null when absent or not JSON.
+	 */
+	private function readMeta(string $name): ?array
+	{
+		$raw = $this->redis()->get($this->key($name));
+		if (!is_string($raw)) {
+			return null;
+		}
+		$decoded = json_decode($raw, true);
+		return is_array($decoded) ? TBayesianPayload::map($decoded) : null;
 	}
 
 	/**
@@ -270,6 +428,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 		if ($redis->sAdd($this->_indexKey, $name) === false) {
 			throw new TInvalidOperationException('bayesian_storage_redis_write_failed', $this->_indexKey);
 		}
+		unset($this->_layoutChecked[$name]);
 	}
 
 	/**
@@ -282,15 +441,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	 */
 	public function load(string $name): ?array
 	{
-		$raw = $this->redis()->get($this->key($name));
-		if ($raw === false || $raw === null) {
-			return null;
-		}
-		$decoded = json_decode((string) $raw, true);
-		if (!is_array($decoded)) {
-			return null;
-		}
-		return $decoded;
+		return $this->readMeta($name);
 	}
 
 	/**
@@ -308,6 +459,10 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 
 	/**
 	 * Removes a payload.  Removing a non-existent name is a no-op.
+	 *
+	 * In per-token mode the model is spread across the metadata key, the category hashes, one
+	 * hash per token, and the token set; one Lua script removes all of them, so a trainer
+	 * racing the delete cannot leave part of the model behind to resurrect on the next save.
 	 * @param string $name The model name.
 	 * @throws TConfigurationException When the connection cannot be established.
 	 * @throws TInvalidDataValueException When the name is invalid.
@@ -319,18 +474,23 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 		$key = $this->key($name);
 		$redis = $this->redis();
 		if ($this->_mode === self::MODE_TOKEN) {
-			// The model is spread across the meta key, the categories hash, one hash per token,
-			// and the token set.  Leaving any of those behind would resurrect part of the model
-			// on the next save under the same name, so all of them go.
-			$tokens = $redis->sMembers($this->tokenSetKey($name)) ?: [];
-			$keys = [$key, $this->categoriesKey($name), $this->tokenSetKey($name)];
-			foreach ($tokens as $token) {
-				$keys[] = $this->tokenKey($name, (string) $token);
-			}
-			if ($redis->del($keys) === false) {
+			$result = $redis->eval(self::DELETE_SCRIPT, [
+				$key,
+				$this->categoryDocumentsKey($name),
+				$this->categoryTokensKey($name),
+				$this->legacyCategoriesKey($name),
+				$this->tokenSetKey($name),
+				$this->_indexKey,
+				$name,
+				$this->tokenKeyPrefix($name),
+			], 6);
+			if ($result === false) {
 				throw new TInvalidOperationException('bayesian_storage_redis_write_failed', $key);
 			}
-		} elseif ($redis->del($key) === false) {
+			unset($this->_layoutChecked[$name]);
+			return;
+		}
+		if ($redis->del($key) === false) {
 			throw new TInvalidOperationException('bayesian_storage_redis_write_failed', $key);
 		}
 		if ($redis->sRem($this->_indexKey, $name) === false) {
@@ -361,9 +521,9 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	 *
 	 * `payload` (the default) stores the whole model as one JSON string; `token` spreads it
 	 * across per-token hashes so a classifier can score a document by reading only that
-	 * document's tokens, and the model is bounded by Redis rather than by PHP's memory limit.
-	 * The two are different layouts of the same model — one is not readable in the other mode,
-	 * so re-save a model after changing this.
+	 * document's tokens, the model is bounded by Redis rather than by PHP's memory limit, and
+	 * many processes may train it at once.  The two are different layouts of the same model —
+	 * one is not readable in the other mode, so re-save a model after changing this.
 	 * @param string $value Either `payload` or `token`.
 	 * @throws TInvalidDataValueException When the value is neither mode.
 	 */
@@ -373,6 +533,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 			throw new TInvalidDataValueException('bayesian_storage_mode_invalid', $value);
 		}
 		$this->_mode = $value;
+		$this->_layoutChecked = [];
 	}
 
 	/**
@@ -386,6 +547,65 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 			throw new TInvalidOperationException('bayesian_storage_token_mode_required');
 		}
 		return $this->redis();
+	}
+
+	/**
+	 * Checks the layout version of a model once per instance, upgrading a model written by an
+	 * earlier release and refusing one written by a later release.
+	 *
+	 * A model with no metadata but a layout-1 category hash (only a hand-built fixture looks
+	 * like that) is upgraded too, so the category read never has to guess at the packing.
+	 * @param string $name The model name.
+	 * @throws TInvalidDataValueException When the model's layout is newer than this release reads.
+	 */
+	private function ensureLayout(string $name): void
+	{
+		if (isset($this->_layoutChecked[$name])) {
+			return;
+		}
+		$redis = $this->redis();
+		$meta = $this->readMeta($name);
+		if ($meta === null) {
+			if (!$redis->exists($this->legacyCategoriesKey($name))) {
+				return;
+			}
+			$version = 1;
+		} else {
+			$version = TBayesianPayload::int($meta['layoutVersion'] ?? null, 1);
+		}
+		if ($version > self::TOKEN_LAYOUT_VERSION) {
+			throw new TInvalidDataValueException('bayesian_storage_layout_unsupported', $name, (string) $version, (string) self::TOKEN_LAYOUT_VERSION);
+		}
+		if ($version < self::TOKEN_LAYOUT_VERSION) {
+			$this->upgradeLayout($name, $meta);
+		}
+		$this->_layoutChecked[$name] = true;
+	}
+
+	/**
+	 * Brings a layout-1 model to the current layout in one transaction: the packed category
+	 * hash is split into the two integer hashes and the metadata is stamped.
+	 * @param string $name The model name.
+	 * @param ?array<string, mixed> $meta The model's metadata, when it has any.
+	 */
+	private function upgradeLayout(string $name, ?array $meta): void
+	{
+		$redis = $this->redis();
+		$legacyKey = $this->legacyCategoriesKey($name);
+		$packed = $redis->hGetAll($legacyKey);
+		$tx = $redis->multi();
+		if (is_array($packed)) {
+			foreach ($packed as $category => $value) {
+				$scalars = self::unpackCategoryScalars((string) $value);
+				$tx->hSet($this->categoryDocumentsKey($name), (string) $category, (string) $scalars['documentCount']);
+				$tx->hSet($this->categoryTokensKey($name), (string) $category, (string) $scalars['totalTokens']);
+			}
+		}
+		$tx->del($legacyKey);
+		if ($meta !== null) {
+			$tx->set($this->key($name), $this->encodeMeta($meta));
+		}
+		$tx->exec();
 	}
 
 	/**
@@ -404,53 +624,69 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	public function saveTokenModel(string $name, array $meta, array $categories, array $tokens): void
 	{
 		$redis = $this->requireTokenMode();
-		$encoded = json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-		if ($encoded === false) {
-			throw new TInvalidDataValueException('bayesian_storage_encode_failed', json_last_error_msg());
-		}
+		$encoded = $this->encodeMeta($meta);
 		$metaKey = $this->key($name);
-		$categoriesKey = $this->categoriesKey($name);
+		$documentsKey = $this->categoryDocumentsKey($name);
+		$totalsKey = $this->categoryTokensKey($name);
 		$tokenSetKey = $this->tokenSetKey($name);
-		$staleTokens = $redis->sMembers($tokenSetKey) ?: [];
+		$staleTokens = $redis->sMembers($tokenSetKey);
 
 		$tx = $redis->multi();
-		$tx->del([$metaKey, $categoriesKey, $tokenSetKey]);
-		foreach ($staleTokens as $token) {
-			$tx->del($this->tokenKey($name, (string) $token));
+		$tx->del([$metaKey, $documentsKey, $totalsKey, $this->legacyCategoriesKey($name), $tokenSetKey]);
+		if (is_array($staleTokens)) {
+			foreach ($staleTokens as $token) {
+				$tx->del($this->tokenKey($name, (string) $token));
+			}
 		}
 		$tx->set($metaKey, $encoded);
 		$tx->sAdd($this->_indexKey, $name);
 		foreach ($categories as $category => $stats) {
-			$tx->hSet($categoriesKey, (string) $category, self::packCategoryScalars((int) ($stats['documentCount'] ?? 0), (int) ($stats['totalTokens'] ?? 0)));
+			$tx->hSet($documentsKey, (string) $category, (string) max(0, (int) $stats['documentCount']));
+			$tx->hSet($totalsKey, (string) $category, (string) max(0, (int) $stats['totalTokens']));
 		}
 		foreach ($tokens as $token => $perCategory) {
 			$token = (string) $token;
 			$tokenKey = $this->tokenKey($name, $token);
 			foreach ($perCategory as $category => $stats) {
 				$category = (string) $category;
-				$tx->hSet($tokenKey, self::tokenField('c', $category), (string) (int) ($stats['count'] ?? 0));
-				$tx->hSet($tokenKey, self::tokenField('d', $category), (string) (int) ($stats['docCount'] ?? 0));
+				$tx->hSet($tokenKey, self::tokenField('c', $category), (string) max(0, (int) $stats['count']));
+				$tx->hSet($tokenKey, self::tokenField('d', $category), (string) max(0, (int) $stats['docCount']));
 			}
 			$tx->sAdd($tokenSetKey, $token);
 		}
 		$tx->exec();
+		$this->_layoutChecked[$name] = true;
 	}
 
 	/**
 	 * Returns a model's model-level state, or null when the name is unknown.
+	 *
+	 * The document total is the sum of the category document counts and the vocabulary size
+	 * the cardinality of the token set, so both reflect every write that has landed.
 	 * @param string $name The model name.
 	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TInvalidDataValueException When the model's layout is newer than this release reads.
 	 * @return ?array<string, mixed> The metadata, or null.
 	 */
 	public function loadTokenMeta(string $name): ?array
 	{
-		$this->requireTokenMode();
-		$raw = $this->redis()->get($this->key($name));
-		if ($raw === false || $raw === null) {
+		$redis = $this->requireTokenMode();
+		$this->ensureLayout($name);
+		$meta = $this->readMeta($name);
+		if ($meta === null) {
 			return null;
 		}
-		$decoded = json_decode((string) $raw, true);
-		return is_array($decoded) ? $decoded : null;
+		$total = 0;
+		$documents = $redis->hGetAll($this->categoryDocumentsKey($name));
+		if (is_array($documents)) {
+			foreach ($documents as $count) {
+				$total += TBayesianPayload::int($count);
+			}
+		}
+		$meta['totalDocuments'] = $total;
+		$meta['vocabularySize'] = (int) $redis->sCard($this->tokenSetKey($name));
+		$meta['layoutVersion'] = self::TOKEN_LAYOUT_VERSION;
+		return $meta;
 	}
 
 	/**
@@ -463,10 +699,23 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	public function loadTokenCategories(string $name): array
 	{
 		$redis = $this->requireTokenMode();
-		$hash = $redis->hGetAll($this->categoriesKey($name)) ?: [];
+		$this->ensureLayout($name);
+		$documents = $redis->hGetAll($this->categoryDocumentsKey($name));
+		$totals = $redis->hGetAll($this->categoryTokensKey($name));
 		$out = [];
-		foreach ($hash as $category => $packed) {
-			$out[(string) $category] = self::unpackCategoryScalars((string) $packed);
+		if (is_array($documents)) {
+			foreach ($documents as $category => $count) {
+				$out[(string) $category] = ['documentCount' => (int) $count, 'totalTokens' => 0];
+			}
+		}
+		if (is_array($totals)) {
+			foreach ($totals as $category => $count) {
+				$category = (string) $category;
+				if (!isset($out[$category])) {
+					$out[$category] = ['documentCount' => 0, 'totalTokens' => 0];
+				}
+				$out[$category]['totalTokens'] = (int) $count;
+			}
 		}
 		ksort($out);
 		return $out;
@@ -495,12 +744,15 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 		}
 		$results = $pipe->exec();
 		$out = [];
+		if (!is_array($results)) {
+			return [];
+		}
 		foreach ($unique as $i => $token) {
 			$hash = $results[$i] ?? [];
 			if (!is_array($hash) || $hash === []) {
 				continue;
 			}
-			$out[$token] = self::parseTokenHash($hash);
+			$out[$token] = self::parseTokenHash(TBayesianPayload::map($hash));
 		}
 		return $out;
 	}
@@ -508,38 +760,51 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	/**
 	 * Applies one training document's deltas without rewriting the model.
 	 *
-	 * The increments use `HINCRBY`, which is atomic per field, so this needs no read of the old
-	 * counts — the race a read-modify-write would have is gone, and the whole document still
-	 * lands in one transaction.
+	 * The token increments, the category increments and the metadata write run inside one
+	 * `MULTI`, and the increments themselves are Lua scripts using `HINCRBY`, so nothing is
+	 * read, added in PHP and written back: two writers training at once both land, in either
+	 * order.  A negative delta is accepted and clamped at zero, and a token no document contains
+	 * any more leaves the vocabulary, so the model ends as it would have without the document.
 	 * @param string $name The model name.
 	 * @param string $category The category the document was filed under.
-	 * @param array<string, array{count:int, docCount:int}> $tokenDeltas The per-token increments.
-	 * @param array<string, mixed> $meta The updated model-level state.
-	 * @param array{documentCount:int, totalTokens:int} $categoryStats The category's updated scalars.
+	 * @param array<string, array{count?:int, docCount?:int}> $tokenDeltas The per-token increments.
+	 * @param array<string, mixed> $meta The model-level state to store alongside; `totalDocuments`
+	 * and `vocabularySize` in it are ignored, and an empty array leaves the stored metadata as it is.
+	 * @param array{documentCount?:int, totalTokens?:int} $categoryStats The category's increments.
 	 * @throws TInvalidOperationException When the storage is not in per-token mode.
-	 * @throws TInvalidDataValueException When the metadata cannot be JSON-encoded.
+	 * @throws TInvalidDataValueException When the metadata cannot be JSON-encoded, or the model's
+	 * layout is newer than this release reads.
 	 */
 	public function applyDeltas(string $name, string $category, array $tokenDeltas, array $meta, array $categoryStats): void
 	{
 		$redis = $this->requireTokenMode();
-		$encoded = json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-		if ($encoded === false) {
-			throw new TInvalidDataValueException('bayesian_storage_encode_failed', json_last_error_msg());
-		}
-		$countField = self::tokenField('c', $category);
-		$docField = self::tokenField('d', $category);
+		$this->ensureLayout($name);
+		$encoded = $meta === [] ? null : $this->encodeMeta($meta);
 		$tokenSetKey = $this->tokenSetKey($name);
 
 		$tx = $redis->multi();
-		$tx->set($this->key($name), $encoded);
+		foreach (array_chunk($tokenDeltas, self::TOKEN_CHUNK, true) as $chunk) {
+			$keys = [$tokenSetKey];
+			$args = [$category];
+			foreach ($chunk as $token => $delta) {
+				$token = (string) $token;
+				$keys[] = $this->tokenKey($name, $token);
+				$args[] = $token;
+				$args[] = (string) (int) ($delta['count'] ?? 0);
+				$args[] = (string) (int) ($delta['docCount'] ?? 0);
+			}
+			$tx->eval(self::TOKEN_DELTA_SCRIPT, array_merge($keys, $args), count($keys));
+		}
+		$tx->eval(self::CATEGORY_DELTA_SCRIPT, [
+			$this->categoryDocumentsKey($name),
+			$this->categoryTokensKey($name),
+			$category,
+			(string) (int) ($categoryStats['documentCount'] ?? 0),
+			(string) (int) ($categoryStats['totalTokens'] ?? 0),
+		], 2);
 		$tx->sAdd($this->_indexKey, $name);
-		$tx->hSet($this->categoriesKey($name), $category, self::packCategoryScalars((int) ($categoryStats['documentCount'] ?? 0), (int) ($categoryStats['totalTokens'] ?? 0)));
-		foreach ($tokenDeltas as $token => $delta) {
-			$token = (string) $token;
-			$tokenKey = $this->tokenKey($name, $token);
-			$tx->hIncrBy($tokenKey, $countField, (int) ($delta['count'] ?? 0));
-			$tx->hIncrBy($tokenKey, $docField, (int) ($delta['docCount'] ?? 0));
-			$tx->sAdd($tokenSetKey, $token);
+		if ($encoded !== null) {
+			$tx->set($this->key($name), $encoded);
 		}
 		$tx->exec();
 	}
@@ -552,8 +817,13 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	 */
 	public function list(): array
 	{
-		$members = $this->redis()->sMembers($this->_indexKey) ?: [];
-		$names = array_map('strval', $members);
+		$members = $this->redis()->sMembers($this->_indexKey);
+		$names = [];
+		if (is_array($members)) {
+			foreach ($members as $member) {
+				$names[] = (string) $member;
+			}
+		}
 		sort($names);
 		return $names;
 	}
@@ -663,12 +933,14 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	}
 
 	/**
-	 * Sets the key prefix.
+	 * Sets the key prefix.  Set {@see setIndexKey IndexKey} alongside it: the index of model
+	 * names is a key of its own and does not follow the prefix.
 	 * @param string $value The key prefix.
 	 */
 	public function setKeyPrefix(string $value): void
 	{
 		$this->_keyPrefix = $value;
+		$this->_layoutChecked = [];
 	}
 
 	/**
@@ -696,6 +968,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	public function setRedis(Redis $redis): void
 	{
 		$this->_redis = $redis;
+		$this->_layoutChecked = [];
 	}
 
 	/**

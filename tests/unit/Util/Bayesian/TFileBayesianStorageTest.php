@@ -16,7 +16,15 @@ class TFileBayesianStorageTest extends PHPUnit\Framework\TestCase
 	{
 		if (is_dir($this->_dir)) {
 			foreach (glob($this->_dir . '/*') ?: [] as $file) {
-				@unlink($file);
+				if (is_dir($file)) {
+					@chmod($file, 0o755);
+					foreach (glob($file . '/*') ?: [] as $inner) {
+						@unlink($inner);
+					}
+					@rmdir($file);
+				} else {
+					@unlink($file);
+				}
 			}
 			@rmdir($this->_dir);
 		}
@@ -272,5 +280,51 @@ class TFileBayesianStorageTest extends PHPUnit\Framework\TestCase
 		} finally {
 			chmod($path, 0o644);
 		}
+	}
+	public function testNamesStartingWithADotAreRejected()
+	{
+		// A dotfile model would be saved but never listed (glob skips dotfiles), and the
+		// in-progress temp files are dotfiles by design.
+		$storage = new TFileBayesianStorage();
+		$storage->setDirectory($this->_dir);
+		foreach (['.hidden', '.', '..'] as $name) {
+			try {
+				$storage->save($name, ['x' => 1]);
+				self::fail("expected {$name} to be rejected");
+			} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+				self::assertSame('bayesian_storage_name_invalid', $e->getErrorCode());
+			}
+		}
+		self::assertSame([], $storage->list());
+		// A dot inside the name is fine.
+		$storage->save('v1.2', ['x' => 1]);
+		self::assertSame(['v1.2'], $storage->list());
+	}
+
+	public function testFileAndDirectoryModesAreConfigurable()
+	{
+		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+			self::markTestSkipped('root ignores modes');
+		}
+		$storage = new TFileBayesianStorage();
+		self::assertSame(0o644, $storage->getFileMode());
+		self::assertSame(0o755, $storage->getDirectoryMode());
+		$storage->setDirectory($this->_dir . '/private');
+		$storage->setFileMode(0o600);
+		$storage->setDirectoryMode(0o700);
+		$storage->save('m', ['a' => 1]);
+		clearstatcache();
+		self::assertSame(0o600, fileperms($this->_dir . '/private/m.json') & 0o777, 'the model file gets the configured mode');
+		self::assertSame(0o700, fileperms($this->_dir . '/private') & 0o777, 'the created directory gets the configured mode');
+		self::assertSame(['a' => 1], $storage->load('m'));
+		// The setters accept the octal string form PRADO configuration passes through.
+		$storage->setFileMode('0640');
+		self::assertSame(0o640, $storage->getFileMode());
+		$storage->setDirectoryMode('0750');
+		self::assertSame(0o750, $storage->getDirectoryMode());
+		$storage->save('m', ['a' => 2]);
+		clearstatcache();
+		self::assertSame(0o640, fileperms($this->_dir . '/private/m.json') & 0o777, 'a re-save applies the current mode');
+		chmod($this->_dir . '/private', 0o755);
 	}
 }

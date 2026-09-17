@@ -256,4 +256,22 @@ class TBernoulliNaiveBayesTest extends PHPUnit\Framework\TestCase
 		}
 		self::assertEqualsWithDelta(1.0, array_sum($scores), 1e-9);
 	}
+	public function testUntrainRestoresTheScoresOfTheSmallerModel()
+	{
+		// The cached aggregates depend on every count; untraining must invalidate them exactly
+		// as training does, so the scores equal a model that never saw the document.
+		$reference = new TBernoulliNaiveBayes();
+		$reference->trainOne('spam', 'cheap pills buy now');
+		$reference->trainOne('ham', 'team meeting agenda');
+		$full = new TBernoulliNaiveBayes();
+		$full->trainOne('spam', 'cheap pills buy now');
+		$full->trainOne('ham', 'team meeting agenda');
+		$full->score('cheap meeting');   // warm the caches
+		$full->trainOne('spam', 'lottery prize winner');
+		$full->score('cheap meeting');
+		$full->untrainOne('spam', 'lottery prize winner');
+		foreach (['cheap meeting', 'lottery', 'agenda now'] as $probe) {
+			self::assertSame($reference->score($probe), $full->score($probe), $probe);
+		}
+	}
 }

@@ -33,6 +33,57 @@ Behavior every backend shares:
 - A payload that cannot be JSON-encoded throws `bayesian_storage_encode_failed` rather than
   storing an empty record. (The in-process backend is the exception: it stores the array
   as-is and never encodes.)
+- Every payload carries a `formatVersion` (currently `1`). A payload without one was written by
+  0.1.0 and reads as version 1; a payload from a newer format than the installed release is
+  refused with `bayesian_model_format_unsupported` rather than misread.
+
+## Concurrency
+
+Which backend and mode you choose decides whether more than one process may train a model.
+
+**Payload mode is single-writer.** In the in-process, file, SQL-payload and Redis-payload
+layouts a save replaces the whole model, so two processes that each load, train and save the
+same model lose one another's documents: the last writer wins, silently. Reading is always safe
+(the file backend renames a complete file into place; SQL and Redis replace one value), and one
+writer with any number of readers is fine. Use payload mode when training happens in one place
+— a cron job, a console command, an admin page.
+
+**Per-token mode is multi-writer.** With `Mode="token"` on `TSqlBayesianStorage` or
+`TRedisBayesianStorage`, every training write is an atomic increment in the store — `cnt = cnt
++ delta` in SQL, `HINCRBY` inside a Lua script in Redis — and the model's totals are derived by
+the store from what it holds rather than written from any process's snapshot. Any number of web
+requests and background workers may train one model at once without losing a count; the test
+suite proves it with parallel processes against SQLite, MySQL, PostgreSQL and Redis. This is the
+mode to use when training happens from concurrent requests.
+
+Two things follow for a process holding a per-token model:
+
+- Its resident scalars (document total, vocabulary size, category totals) are a snapshot. They
+  are re-read from the store after every `trainOne()` on that process, and
+  `TLazyBayesianVocabulary::refresh()` re-reads them on demand; between those points another
+  process may have moved them. Scores use the snapshot; the per-token statistics are always read
+  live.
+- The prefetched token batch is bounded by `MaxBatchTokens` (default 50,000) so a worker that
+  scores documents indefinitely holds a bounded amount of memory.
+
+Deltas are increments in both directions: `untrainOne()` sends negative ones. Every count is
+clamped at zero, and a token that no document contains any more after a withdrawal leaves the
+vocabulary (its vocabulary row is dropped in SQL, its hash and set membership in Redis), so a
+model that trained and then untrained a document ends as it would have without it.
+
+### Incremental training and the variants
+
+`TNaiveBayesClassifier` and `TMultinomialNaiveBayes` train incrementally against a per-token
+model without restriction. `TBernoulliNaiveBayes` and `TComplementNaiveBayes` each keep a
+per-category aggregate that is a sum over the whole vocabulary (Bernoulli's absent-token mass,
+Complement's weight norm), which a storage-backed vocabulary cannot recompute. Those aggregates
+are written when a resident model is saved; the first `trainOne()` on a *loaded* per-token
+Bernoulli or Complement model clears them, and every later `classify()` on that model raises
+`bayesian_classifier_aggregate_missing` until the model is re-saved from a resident vocabulary.
+That is deliberate — a stale aggregate would shift every score silently — but it means those two
+variants are not incrementally trainable through per-token storage in this release. Train them
+resident and save, or use the multinomial classifier for models trained from live traffic.
+Recomputing the aggregates inside the store is planned.
 
 ## What the classifier stores
 
@@ -46,6 +97,9 @@ Behavior every backend shares:
 | tokenizer class + settings | So a reloaded model tokenizes exactly as it was trained |
 | per-category statistics | Document counts, token counts, per-token document counts, totals |
 | document frequency map | Corpus-wide, for TF-IDF and for the out-of-vocabulary check |
+| `calibration` | The fitted `TTemperatureScaling`, when the model has been calibrated |
+| `extra` | State other components keep with the model, e.g. a tagger's per-label calibrations |
+| `formatVersion` | The payload format (currently 1); see below |
 
 Because the tokenizer travels with the model, a classifier trained with an n-gram tokenizer or a
 chain tokenizes identically after `load()` into a fresh instance.
@@ -62,26 +116,30 @@ only the document's own tokens, so a loaded model costs kilobytes regardless of 
 different trade — one indexed query per classification instead of a one-time decode — covered
 after the sizing here, which is what a resident model costs.
 
-Measured on this codebase, with every category having seen the whole vocabulary:
+Measured with `composer benchmark` (`tests/benchmark/benchmark-storage.php`) on an Apple M-series
+laptop, PHP 8.1, SQLite for the per-token layout, two categories that have both seen the whole
+vocabulary. Rerun it on your own hardware; the ratios matter more than the milliseconds.
 
-| Vocabulary | Categories | JSON payload | Loaded in PHP |
-|---:|---:|---:|---:|
-| 5,000 | 2 | 361 KB | 1.6 MB |
-| 5,000 | 10 | 1.5 MB | 6.6 MB |
-| 20,000 | 2 | 1.5 MB | 6.3 MB |
-| 20,000 | 10 | 6.2 MB | 26.3 MB |
-| 100,000 | 2 | 7.6 MB | 25.0 MB |
+| Vocabulary | JSON payload | Decoded in PHP | Payload `load()` | Per-token `load()` | Payload `trainOne()`+`save()` | Per-token `trainOne()` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 5,000 | 0.7 MB | 2.3 MB | 5 ms, 2.3 MB | 2 ms, 0.1 MB | 2 ms | 1 ms |
+| 20,000 | 2.8 MB | 9.7 MB | 21 ms, 9.7 MB | 0.3 ms, < 0.1 MB | 4 ms | 1 ms |
+| 100,000 | 14.0 MB | 43.7 MB | 106 ms, 43.7 MB | 0.3 ms, < 0.1 MB | 17 ms | 1 ms |
 
 The payload runs **30–40 bytes per token-per-category**: each category keeps its own occurrence
 and document counts for every token it has seen, plus one corpus-wide document-frequency map.
 The decoded PHP structure is **3–4× the JSON**, because hash-table entries cost far more than
 text. Budget both at once — `json_decode()` holds the string and the growing array
-simultaneously.
+simultaneously. Ten categories over the same words cost roughly five times the model of two.
 
-So size scales with vocabulary **times** categories. Ten categories over the same words is five
-times the model of two. The effective lever is the feature space, not the backend: raise
-`MinLength`, supply `StopWords`, or prefer word tokens over character n-grams, which produce far
-more distinct features.
+The per-token columns are what `Mode="token"` buys: loading a model costs a metadata read and a
+category read whatever its size, and training one document writes that document's rows instead
+of re-serializing the model — about 12× faster at 100,000 tokens, and independent of the
+vocabulary. Each classification then costs one indexed query for the document's tokens.
+
+So size scales with vocabulary **times** categories. The effective lever is the feature space,
+not the backend: raise `MinLength`, supply `StopWords`, or prefer word tokens over character
+n-grams, which produce far more distinct features.
 
 | Backend | Ceiling on one model | What usually binds first |
 |---|---|---|
@@ -126,14 +184,21 @@ $storage->setDirectory('/var/lib/myapp/bayesian');
 
 Writes are **atomic**: the payload goes to a per-call unique temp file in the same directory
 with `LOCK_EX`, then `rename()`s into place. `rename()` is atomic within a filesystem, so a
-reader never sees a partial file and two concurrent saves of the same model cannot interleave.
-The directory is created on demand; an unset or empty `Directory` throws
-`bayesian_storage_directory_required`, and one that cannot be created or written throws
+reader never sees a partial file and two concurrent saves of the same model cannot interleave
+— but each save still replaces the whole model, so this is a single-writer backend (see
+[Concurrency](#concurrency)). The directory is created on demand; an unset or empty `Directory`
+throws `bayesian_storage_directory_required`, and one that cannot be created or written throws
 `bayesian_storage_directory_unwritable`.
+
+Files are created with `FileMode` (default `0644`) and a created directory with `DirectoryMode`
+(default `0755`); both accept an integer or the octal string a configuration file carries. A
+model file holds the tokens of its training data, so tighten them (`FileMode="0600"`) when other
+accounts on the host must not read it.
 
 Model names are validated: a name containing a path separator or a null byte is rejected
 (`bayesian_storage_name_invalid`) rather than resolved, so a name like `../../etc/passwd` cannot
-escape the directory.
+escape the directory, and a name starting with a dot is rejected because a dotfile would be
+saved but never listed.
 
 ### `TSqlBayesianStorage`
 
@@ -207,8 +272,32 @@ than creating a SQLite file in the runtime path the way a cache does — a train
 scratch data, and a runtime directory that gets cleared is the wrong place for one.
 
 `Table` is interpolated into the SQL — an identifier cannot be a bound parameter — so it is
-validated against `[A-Za-z_][A-Za-z0-9_]*` and throws `bayesian_storage_table_invalid`
-otherwise, which keeps it from becoming an injection vector.
+validated against `[A-Za-z_][A-Za-z0-9_]*` and at most 48 characters (the per-token tables add
+suffixes, and PostgreSQL and MySQL cap identifiers at 63/64) and throws
+`bayesian_storage_table_invalid` otherwise, which keeps it from becoming an injection vector.
+
+#### Per-token mode
+
+With `Mode="token"` the storage uses five tables: `<table>` for the metadata row,
+`<table>_tokens` (one row per model, token and category), `<table>_categories`,
+`<table>_vocab` (one row per distinct token of a model) and `<table>_counters`. They are
+created on first use like the main table; with `AutoCreateTable="false"`, take the DDL from
+`getCreateTokenTableSql($driver)`. Training is a set of atomic upserts inside one transaction,
+so many processes may train at once ([Concurrency](#concurrency)); tokens are written in sorted
+order so two writers cannot deadlock on each other.
+
+Tokens are stored in a `VARCHAR(191)` column on MySQL and PostgreSQL. A token longer than 191
+characters, or one that is not valid UTF-8, is stored under a fixed-width surrogate key (its
+first 150 characters, a `~`, and 40 hex digits of its SHA-1) on every driver, so a URL from a
+regex tokenizer or a run of characters trains and scores like any other token; the encoding is
+invisible to callers. Model and category names are limited to 191 characters by the same
+columns.
+
+The metadata row of a per-token model carries a `layoutVersion` (currently `2`). A model written
+by 0.1.0 (layout 1, which kept the totals in the metadata and had no vocabulary or counters
+tables) is upgraded in place, inside one transaction, the first time it is read — the two extra
+tables are created automatically when `AutoCreateTable` is on; add them yourself otherwise. A
+layout newer than the installed release is refused with `bayesian_storage_layout_unsupported`.
 
 ### `TRedisBayesianStorage`
 
@@ -234,16 +323,29 @@ The connection opens lazily on the first save or load, and `AUTH`, `SELECT`, and
 are all checked — a failed auth or a rejected write raises rather than being mistaken for
 success (`bayesian_storage_redis_connect_failed`, `bayesian_storage_redis_write_failed`).
 
-Unlike the file backend, a path separator in a model name is harmless here, so only empty names
-and null bytes are rejected.
+Unlike the file backend, a path separator in a model name is harmless here. A name is rejected
+when it is empty, contains a null byte, or contains the sequence `:__`, which the per-token
+sub-keys start with (a model named `m:__t:x` would share a key with token `x` of model `m`).
+Two applications sharing one Redis must set both `KeyPrefix` and `IndexKey`: the index of model
+names is a key of its own and does not follow the prefix.
 
 Like the SQL backend, it can also store a model **per token** (`Mode="token"`): a metadata
-string, a categories hash, and one hash per token, with the document's tokens read back in a
-single pipelined round trip. Incremental training uses `HINCRBY`, so a document's counts land
-atomically without a read-modify-write. The important caveat is that this raises the *per-process*
-ceiling, not the machine's — Redis still holds the whole model in RAM. It solves the cost of
-loading a large model into every PHP request and the `memory_limit` wall; it does not give
-disk-bound models the way SQL does.
+string, two category hashes, a token set, and one hash per token, with the document's tokens
+read back in a single pipelined round trip. Training is one `MULTI` of Lua scripts applying
+`HINCRBY` increments, so a document's counts land atomically and any number of processes may
+train at once ([Concurrency](#concurrency)); the vocabulary size is the cardinality of the token
+set and the document total the sum of the category counts, so neither can drift. Deleting a
+per-token model is one script too, so a trainer racing the delete cannot leave orphan keys. The
+scripts touch keys derived from the model name, which a Redis Cluster does not allow: use a
+single instance or Sentinel-managed replicas.
+
+The metadata carries a `layoutVersion` (currently `2`); a model written by 0.1.0 is upgraded in
+place on first read, and a newer layout is refused with `bayesian_storage_layout_unsupported`.
+
+The important caveat is that per-token mode raises the *per-process* ceiling, not the
+machine's — Redis still holds the whole model in RAM. It solves the cost of loading a large
+model into every PHP request and the `memory_limit` wall; it does not give disk-bound models the
+way SQL does.
 
 ```php
 'storage' => [

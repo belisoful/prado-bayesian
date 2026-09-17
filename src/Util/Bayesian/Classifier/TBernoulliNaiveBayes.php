@@ -11,6 +11,7 @@
 namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
 use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Prado\Exceptions\TInvalidOperationException;
 
 /**
@@ -210,10 +211,10 @@ class TBernoulliNaiveBayes extends TNaiveBayesClassifier
 	protected function importAggregates(array $aggregates): void
 	{
 		$mass = $aggregates['absentMass'] ?? null;
-		if (!is_array($mass) || (float) ($aggregates['alpha'] ?? 0.0) !== $this->_alpha) {
+		if (!is_array($mass) || TBayesianPayload::float($aggregates['alpha'] ?? null) !== $this->_alpha) {
 			return;
 		}
-		$this->_absentMass = array_map('floatval', $mass);
+		$this->_absentMass = TBayesianPayload::floatMap($mass);
 		$this->_massKey = $this->_vocabulary->getStateSignature() . '|' . $this->_alpha;
 	}
 

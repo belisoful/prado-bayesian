@@ -61,7 +61,9 @@ interface IBayesianTokenStorage extends IBayesianStorage
 	public function saveTokenModel(string $name, array $meta, array $categories, array $tokens): void;
 
 	/**
-	 * Returns a model's model-level state, or null when the name is unknown.
+	 * Returns a model's model-level state, or null when the name is unknown.  The returned
+	 * `totalDocuments` and `vocabularySize` are the implementation's own derived counts, which
+	 * reflect every write that has landed.
 	 * @param string $name The model name.
 	 * @return ?array<string, mixed> The metadata, or null.
 	 */
@@ -90,14 +92,22 @@ interface IBayesianTokenStorage extends IBayesianStorage
 	 * Applies one training document's deltas without rewriting the model.
 	 *
 	 * This is what makes incremental training proportional to the document rather than to the
-	 * model: `$tokenDeltas` carries only the tokens the document contained. Implementations
-	 * must apply the whole call atomically — a half-applied document leaves counts that no
-	 * later training can reconcile.
+	 * model: `$tokenDeltas` carries only the tokens the document contained.  Every argument is
+	 * an increment, never an absolute value, and implementations must apply it as an atomic
+	 * in-store increment inside one atomic unit: several processes applying deltas to one
+	 * model at once must all land, and a half-applied document must not be possible.
+	 *
+	 * Negative deltas are accepted and clamped at zero (what removing a document needs); the
+	 * vocabulary never shrinks.  The model's document total and vocabulary size are derived by
+	 * the implementation from what it stores — the vocabulary growth from the tokens the call
+	 * really added — so the `totalDocuments` and `vocabularySize` keys of `$meta` are ignored,
+	 * and {@see loadTokenMeta()} returns the derived values.  An empty `$meta` leaves the
+	 * stored metadata untouched.
 	 * @param string $name The model name.
 	 * @param string $category The category the document was filed under.
-	 * @param array<string, array{count:int, docCount:int}> $tokenDeltas The per-token increments.
-	 * @param array<string, mixed> $meta The updated model-level state.
-	 * @param array{documentCount:int, totalTokens:int} $categoryStats The category's updated scalars.
+	 * @param array<string, array{count?:int, docCount?:int}> $tokenDeltas The per-token increments.
+	 * @param array<string, mixed> $meta The model-level state to store alongside, or an empty array.
+	 * @param array{documentCount?:int, totalTokens?:int} $categoryStats The category's increments.
 	 */
 	public function applyDeltas(string $name, string $category, array $tokenDeltas, array $meta, array $categoryStats): void;
 }

@@ -20,10 +20,17 @@ text ──▶ Tokenizer ──▶ Vocabulary lookup ──▶ Log-space scoring
 3. **Score.** Each candidate category accumulates a log-probability. The arithmetic is in log
    space; see [Why log space](#why-log-space).
 4. **Normalize.** `TBayesMath::normalize()` turns the relative log-scores back into a
-   probability distribution that sums to 1.
+   distribution that sums to 1.
 
 `classify()` returns the highest-scoring category name. `score()` returns the whole
-distribution, which is what you want whenever "how confident?" matters.
+distribution.
+
+> **These are not calibrated probabilities** until you calibrate. `score()` normalizes the Naive
+> Bayes log-posteriors, and Naive Bayes is notoriously overconfident: its independence
+> assumption multiplies correlated evidence, so a document that is 70% likely to be spam
+> routinely scores 0.99. Read the raw scores as a ranking and a margin — which category wins,
+> and by how much relative to the others. To get probabilities, fit a calibration on held-out
+> documents; see [Calibration](#calibration).
 
 > **Numeric category names.** `score()` returns a PHP array keyed by category name, and PHP
 > coerces a purely numeric string key to an integer — a category named `"2024"` comes back
@@ -37,9 +44,28 @@ adds many. Both do the same thing per document: tokenize it, increment the categ
 count, increment each token's count in that category, and increment each distinct token's
 document frequency.
 
-Training is **incremental and additive** — there is no separate "fit" step, and calling
-`trainOne()` again later refines the same model. It is also **destructive to nothing**: the
-vocabulary only grows.
+Training is **incremental** — there is no separate "fit" step, and calling `trainOne()` again
+later refines the same model — and **reversible**: `untrainOne()` and `untrain()` withdraw a
+document exactly. Whether several processes may train one model at once depends on the storage
+layout; see [Storage → Concurrency](storage.md#concurrency), and note the limitation for
+Bernoulli and Complement models stored per token.
+
+### Untraining
+
+`untrainOne(string $category, $document)` is the inverse of `trainOne()` for the same document:
+the category's document count, its per-token counts and per-token document counts, and the
+corpus document frequencies all go down by what the document contributed. Every count stops at
+zero; a token that no document contains any more leaves the vocabulary (so `|V|` shrinks and the
+smoothing changes back); a category left without documents is removed. A model that trained and
+then untrained a document is therefore indistinguishable from one that never saw it — the test
+suite asserts identical scores — in every storage layout, including per-token models trained
+from several processes (the deltas are atomic decrements).
+
+Two things to get right. Pass the document as it was trained: the same text through the same
+tokenizer, or the same pre-tokenized list — the model keeps no record of which documents it
+saw, so a different tokenization withdraws different tokens. And untraining a document that was
+never trained is not an error: counts clamp at zero and unknown tokens are ignored, but the
+category's document count still drops by one, so the caller is responsible for the bookkeeping.
 
 Two consequences worth internalizing:
 
@@ -136,6 +162,64 @@ The per-category weight vector is L1-normalized — the "weighted" refinement of
 makes CNB hold up when one category has ten times the training data of another. The
 corpus-wide counts and the weight norms depend only on training, so they are cached and
 rebuilt only on the next `trainOne()` or `load()`.
+
+## Calibration
+
+A Naive Bayes score is a ranking, not a probability. Calibration fits a small monotone
+correction on labeled documents the model was **not** trained on, so the corrected score
+matches the observed frequency: of the documents scored 0.8, about 80% are really in that
+category. Two methods are provided, one per kind of decision.
+
+**Temperature scaling** (`TTemperatureScaling`) for a classifier's distribution over
+categories. The log-posteriors are divided by one fitted constant, the temperature, before
+normalization; above one flattens, below one sharpens, and the winner never changes. It is one
+parameter, fitted by minimizing the negative log-likelihood of the true labels with a
+one-dimensional search, so a few dozen held-out documents suffice and it cannot overfit the way
+a per-class correction could.
+
+```php
+$classifier->calibrate($heldOut);         // fits and installs; saved with the model
+$classifier->score($text);                // calibrated
+$classifier->logScores($text);            // raw log-posteriors, always available
+```
+
+**Platt scaling** (`TPlattScaling`) for a binary decision value, which is what each label of a
+tagger is: a fitted logistic curve `P = σ(slope · value + intercept)`, with Platt's target
+smoothing so a set with few positives or few negatives still gives a sane curve.
+`TBayesianTagger::calibrate()` fits one per label.
+
+Judge a calibration with `TCalibrationMetrics` on a *third* set of documents, never the ones it
+was fitted on: `distributionLogLoss()` and `distributionCalibrationError()` for a classifier,
+`logLoss()`, `brierScore()` and `expectedCalibrationError()` for a tagger's per-label
+probabilities. Lower is better; a calibration that does not lower them on unseen data is not
+worth keeping. Refit after substantial further training — the calibration is a property of the
+model as it was when fitted, and it is saved with the model.
+
+## Multi-label tagging
+
+A classifier answers "which one category?"; its scores sum to one, so two labels that both
+apply split the mass. Tagging answers "which labels apply?" with an independent probability per
+label, and `TBayesianTagger` gets that from one shared Naive Bayes model.
+
+Every document is trained under each of its labels and, once, under a *background* category
+(`BackgroundCategory`, default `*`) that every document goes into. For any label `L` the "rest
+of the corpus" is then the background minus the label — `count(t, ¬L) = count(t, *) − count(t, L)`,
+`docs(¬L) = docs(*) − docs(L)` — so each label gets an exact binary Naive Bayes decision:
+
+```
+log P(L | d) − log P(¬L | d) = log (n_L + 1)/(n_¬L + 1) + Σ_t w_t · [ log θ_L(t) − log θ_¬L(t) ]
+```
+
+with the same Laplace-smoothed multinomial likelihoods, `Alpha` and TF-IDF weights as the
+classifier, turned into a probability by the logistic function. Nothing is stored per label
+pair, a document costs one write per label plus one, and every storage backend and layout works
+unchanged — including per-token models trained from many processes.
+
+`tag()` returns the labels whose probability reaches `Threshold` (default 0.5), highest first, at
+most `MaxTags` of them. A document with no labels is a valid, useful training example: it
+teaches the model the words that mean nothing. Untraining mirrors training. The probabilities
+are as overconfident as any Naive Bayes output until `calibrate()` fits a Platt scaling per
+label on held-out examples; the calibrations are saved with the model.
 
 ## TF-IDF re-weighting
 

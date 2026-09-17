@@ -31,5 +31,11 @@
 	"TFileBayesianStorage": "Belisoful\\Prado\\Util\\Bayesian\\Storage\\TFileBayesianStorage",
 	"TSqlBayesianStorage": "Belisoful\\Prado\\Util\\Bayesian\\Storage\\TSqlBayesianStorage",
 	"TRedisBayesianStorage": "Belisoful\\Prado\\Util\\Bayesian\\Storage\\TRedisBayesianStorage",
-	"TBayesianService": "Belisoful\\Prado\\Web\\Services\\TBayesianService"
+	"TBayesianService": "Belisoful\\Prado\\Web\\Services\\TBayesianService",
+	"TBayesianPayload": "Belisoful\\Prado\\Util\\Bayesian\\TBayesianPayload",
+	"IBayesianTagger": "Belisoful\\Prado\\Util\\Bayesian\\IBayesianTagger",
+	"TBayesianTagger": "Belisoful\\Prado\\Util\\Bayesian\\TBayesianTagger",
+	"TTemperatureScaling": "Belisoful\\Prado\\Util\\Bayesian\\Calibration\\TTemperatureScaling",
+	"TPlattScaling": "Belisoful\\Prado\\Util\\Bayesian\\Calibration\\TPlattScaling",
+	"TCalibrationMetrics": "Belisoful\\Prado\\Util\\Bayesian\\Evaluation\\TCalibrationMetrics"
 }

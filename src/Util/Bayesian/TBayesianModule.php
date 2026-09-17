@@ -15,6 +15,7 @@ use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 use Belisoful\Prado\Util\Bayesian\Storage\IBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
 use Prado\Exceptions\TConfigurationException;
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Prado\Prado;
 use Prado\TComponent;
 use Prado\TModule;
@@ -107,7 +108,7 @@ class TBayesianModule extends TModule
 	 * `<classifier>` and `<storage>` child elements.  When `DefaultClassifier` is set and a
 	 * storage is configured, the classifier is named after it and the model is loaded eagerly
 	 * if the storage already holds it.
-	 * @param null|array|TXmlElement $config The module configuration.
+	 * @param null|array<string, mixed>|TXmlElement $config The module configuration.
 	 * @throws TConfigurationException When a configured component class is missing or invalid,
 	 * or the storage cannot be reached.
 	 * @return void
@@ -118,10 +119,14 @@ class TBayesianModule extends TModule
 		// configured together all share the one backend.
 		if ($config instanceof TXmlElement) {
 			foreach ($config->getElementsByTagName('storage') as $element) {
-				$this->createStorage($element->getAttributes()->toArray());
+				if ($element instanceof TXmlElement) {
+					$this->createStorage($element->getAttributes()->toArray());
+				}
 			}
 			foreach ($config->getElementsByTagName('classifier') as $element) {
-				$this->createClassifier($element->getAttributes()->toArray(), $element);
+				if ($element instanceof TXmlElement) {
+					$this->createClassifier($element->getAttributes()->toArray(), $element);
+				}
 			}
 		} elseif (is_array($config)) {
 			if (isset($config['storage']) && is_array($config['storage'])) {
@@ -151,11 +156,12 @@ class TBayesianModule extends TModule
 			return [];
 		}
 		if (isset($classifier['class'])) {
-			return [$classifier];
+			return [TBayesianPayload::map($classifier)];
 		}
 		$out = [];
 		foreach ($classifier as $id => $properties) {
 			if (is_array($properties)) {
+				$properties = TBayesianPayload::map($properties);
 				$properties['id'] ??= (string) $id;
 				$out[] = $properties;
 			}
@@ -210,7 +216,7 @@ class TBayesianModule extends TModule
 	 * @param string $interface The interface the class must implement.
 	 * @param string $errorCode The error code to throw with.
 	 * @throws TConfigurationException When the class is absent, unresolvable, or of the wrong type.
-	 * @return string The resolved PHP class name.
+	 * @return class-string The resolved PHP class name.
 	 */
 	private function resolveClass($class, string $interface, string $errorCode): string
 	{
@@ -235,7 +241,7 @@ class TBayesianModule extends TModule
 	 * A classifier given an `id` joins {@see getClassifiers()} under it, so one module can own
 	 * several models over one storage backend; one without an id is the module's single default,
 	 * which is what a one-model configuration wants.
-	 * @param array<string, mixed> $properties The classifier properties, including its `class`.
+	 * @param array<int|string, mixed> $properties The classifier properties, including its `class`.
 	 * @param ?TXmlElement $element The configuration element, when the configuration is XML, so
 	 * a `<tokenizer>` child can be read from it.
 	 * @throws TConfigurationException When the class is absent or not an {@see IBayesianClassifier}.
@@ -243,16 +249,18 @@ class TBayesianModule extends TModule
 	protected function createClassifier(array $properties, ?TXmlElement $element = null): void
 	{
 		$class = $properties['class'] ?? null;
-		$id = isset($properties['id']) ? (string) $properties['id'] : null;
+		$id = isset($properties['id']) ? TBayesianPayload::string($properties['id']) : null;
 		// `Model` is the storage key this classifier reads and writes; it is not a property of
 		// the classifier, which calls the same thing `Name`.
-		$model = isset($properties['Model']) ? (string) $properties['Model'] : null;
+		$model = isset($properties['Model']) ? TBayesianPayload::string($properties['Model']) : null;
 		unset($properties['class'], $properties['id'], $properties['Model'], $properties['tokenizer']);
 		$resolved = $this->resolveClass($class, IBayesianClassifier::class, 'bayesian_classifier_class_invalid');
-		/** @var IBayesianClassifier&TComponent $classifier */
 		$classifier = Prado::createComponent($resolved);
+		if (!($classifier instanceof IBayesianClassifier) || !($classifier instanceof TComponent)) {
+			throw new TConfigurationException('bayesian_classifier_class_invalid', $resolved);
+		}
 		foreach ($properties as $name => $value) {
-			$classifier->setSubProperty($name, $value);
+			$classifier->setSubProperty((string) $name, $value);
 		}
 		if ($model !== null && $model !== '') {
 			$classifier->setName($model);
@@ -288,7 +296,7 @@ class TBayesianModule extends TModule
 	 * wired up in code.  A tokenizer set here is used for training; a model loaded from storage
 	 * brings back the tokenizer it was trained with, which takes precedence.
 	 * @param IBayesianClassifier $classifier The classifier to configure.
-	 * @param array<string, mixed> $properties The tokenizer properties, including its `class`.
+	 * @param array<int|string, mixed> $properties The tokenizer properties, including its `class`.
 	 * @throws TConfigurationException When the class is absent or not an {@see IBayesianTokenizer}.
 	 */
 	protected function createTokenizer(IBayesianClassifier $classifier, array $properties): void
@@ -296,17 +304,19 @@ class TBayesianModule extends TModule
 		$class = $properties['class'] ?? null;
 		unset($properties['class'], $properties['id']);
 		$resolved = $this->resolveClass($class, IBayesianTokenizer::class, 'bayesian_tokenizer_class_invalid');
-		/** @var IBayesianTokenizer&TComponent $tokenizer */
 		$tokenizer = Prado::createComponent($resolved);
+		if (!($tokenizer instanceof IBayesianTokenizer) || !($tokenizer instanceof TComponent)) {
+			throw new TConfigurationException('bayesian_tokenizer_class_invalid', $resolved);
+		}
 		foreach ($properties as $name => $value) {
-			$tokenizer->setSubProperty($name, $value);
+			$tokenizer->setSubProperty((string) $name, $value);
 		}
 		$classifier->setTokenizer($tokenizer);
 	}
 
 	/**
 	 * Creates a storage backend from a configuration map and sets it.
-	 * @param array<string, mixed> $properties The storage properties, including its `class`.
+	 * @param array<int|string, mixed> $properties The storage properties, including its `class`.
 	 * @throws TConfigurationException When the class is absent or not an {@see IBayesianStorage}.
 	 */
 	protected function createStorage(array $properties): void
@@ -314,10 +324,12 @@ class TBayesianModule extends TModule
 		$class = $properties['class'] ?? null;
 		unset($properties['class'], $properties['id']);
 		$resolved = $this->resolveClass($class, IBayesianStorage::class, 'bayesian_storage_class_invalid');
-		/** @var IBayesianStorage&TComponent $storage */
 		$storage = Prado::createComponent($resolved);
+		if (!($storage instanceof IBayesianStorage) || !($storage instanceof TComponent)) {
+			throw new TConfigurationException('bayesian_storage_class_invalid', $resolved);
+		}
 		foreach ($properties as $name => $value) {
-			$storage->setSubProperty($name, $value);
+			$storage->setSubProperty((string) $name, $value);
 		}
 		$this->setStorage($storage);
 	}

@@ -22,7 +22,6 @@ class TRedisTokenEncodingTest extends PHPUnit\Framework\TestCase
 	private function invoke(string $method, array $args)
 	{
 		$m = new \ReflectionMethod(TRedisBayesianStorage::class, $method);
-		$m->setAccessible(true);
 		return $m->invoke(null, ...$args);
 	}
 
@@ -77,9 +76,10 @@ class TRedisTokenEncodingTest extends PHPUnit\Framework\TestCase
 		self::assertSame([], $this->invoke('parseTokenHash', [[]]));
 	}
 
-	public function testCategoryScalarsRoundTrip()
+	public function testLegacyCategoryScalarsUnpack()
 	{
-		self::assertSame('12:340', $this->invoke('packCategoryScalars', [12, 340]));
+		// Layout 1 (0.1.0) packed a category's scalars as "docs:tokens"; the upgrade path still
+		// has to read that form.
 		self::assertSame(
 			['documentCount' => 12, 'totalTokens' => 340],
 			$this->invoke('unpackCategoryScalars', ['12:340'])

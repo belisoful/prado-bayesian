@@ -57,6 +57,23 @@ interface IBayesianClassifier
 	public function trainOne(string $category, $document): void;
 
 	/**
+	 * Withdraws a labeled training set: the exact inverse of {@see train()} for the same
+	 * documents.  Counts stop at zero, a token no document contains any more leaves the
+	 * vocabulary, and a category left without documents is removed.
+	 * @param TBayesianTrainingSet $set The training set to withdraw.
+	 * @since 0.2.0
+	 */
+	public function untrain(TBayesianTrainingSet $set): void;
+
+	/**
+	 * Withdraws a single training document from a category; the inverse of {@see trainOne()}.
+	 * @param string $category The category name.
+	 * @param string|string[] $document The document (text or pre-tokenized), as it was trained.
+	 * @since 0.2.0
+	 */
+	public function untrainOne(string $category, $document): void;
+
+	/**
 	 * Classifies a document and returns the most likely category.
 	 * @param string|string[] $document The document (text or pre-tokenized).
 	 * @return string The predicted category.

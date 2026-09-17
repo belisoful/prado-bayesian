@@ -89,4 +89,61 @@ class TBayesianVocabularyTest extends PHPUnit\Framework\TestCase
 		$vocab->setStats([], [], -1);
 		self::assertSame(0, $vocab->getTotalDocuments());
 	}
+	public function testRemoveDocumentReversesAddDocumentExactly()
+	{
+		$reference = new TBayesianVocabulary();
+		$reference->addDocument('spam', ['cheap', 'pills']);
+		$reference->addDocument('ham', ['team', 'meeting']);
+
+		$vocabulary = new TBayesianVocabulary();
+		$vocabulary->addDocument('spam', ['cheap', 'pills']);
+		$vocabulary->addDocument('ham', ['team', 'meeting']);
+		$vocabulary->addDocument('spam', ['cheap', 'cheap', 'watches']);
+		$generation = $vocabulary->getGeneration();
+		$vocabulary->removeDocument('spam', ['cheap', 'cheap', 'watches']);
+
+		self::assertSame($reference->getTotalDocuments(), $vocabulary->getTotalDocuments());
+		self::assertSame($reference->getDocumentFrequency(), $vocabulary->getDocumentFrequency());
+		self::assertSame($reference->getVocabularySize(), $vocabulary->getVocabularySize());
+		self::assertFalse($vocabulary->hasToken('watches'), 'a token no document contains any more has left the vocabulary');
+		self::assertTrue($vocabulary->hasToken('cheap'));
+		self::assertSame($reference->getCategory('spam')->getTokenCounts(), $vocabulary->getCategory('spam')->getTokenCounts());
+		self::assertSame($reference->getCategory('spam')->getTokenDocumentCounts(), $vocabulary->getCategory('spam')->getTokenDocumentCounts());
+		self::assertSame($reference->getCategory('spam')->getTotalTokens(), $vocabulary->getCategory('spam')->getTotalTokens());
+		self::assertGreaterThan($generation, $vocabulary->getGeneration());
+	}
+
+	public function testRemovingTheLastDocumentOfACategoryRemovesTheCategory()
+	{
+		$vocabulary = new TBayesianVocabulary();
+		$vocabulary->addDocument('spam', ['cheap']);
+		$vocabulary->addDocument('ham', ['team']);
+		$vocabulary->removeDocument('ham', ['team']);
+		self::assertSame(['spam'], $vocabulary->getCategoryNames());
+		self::assertNull($vocabulary->getCategory('ham'));
+		self::assertFalse($vocabulary->hasToken('team'));
+		self::assertSame(1, $vocabulary->getTotalDocuments());
+		$vocabulary->removeDocument('spam', ['cheap']);
+		self::assertTrue($vocabulary->getIsEmpty());
+		self::assertSame(0, $vocabulary->getVocabularySize());
+	}
+
+	public function testRemoveDocumentClampsAndIgnoresTheUnknown()
+	{
+		$vocabulary = new TBayesianVocabulary();
+		$vocabulary->addDocument('spam', ['cheap']);
+		// Removing from a category that does not exist changes nothing.
+		$vocabulary->removeDocument('ghost', ['cheap']);
+		self::assertSame(['spam'], $vocabulary->getCategoryNames());
+		self::assertSame(1, $vocabulary->getTokenDocumentFrequency('cheap'));
+		// Removing tokens the category never saw leaves the counts alone; the document count
+		// still drops, since a document was withdrawn.
+		$vocabulary->addDocument('spam', ['pills']);
+		$vocabulary->removeDocument('spam', ['never', 'seen']);
+		self::assertSame(1, $vocabulary->getCategory('spam')->getDocumentCount());
+		self::assertSame(1, $vocabulary->getTokenDocumentFrequency('cheap'));
+		self::assertSame(1, $vocabulary->getTokenDocumentFrequency('pills'));
+		self::assertSame(0, $vocabulary->getTokenDocumentFrequency('never'));
+		self::assertSame(2, $vocabulary->getVocabularySize());
+	}
 }

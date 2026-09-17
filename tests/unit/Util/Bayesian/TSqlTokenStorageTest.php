@@ -383,4 +383,302 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		$this->expectException(\Prado\Exceptions\TInvalidOperationException::class);
 		$loaded->save();
 	}
+	public function testTwoLoadedInstancesTrainingTheSameModelLoseNoCounts()
+	{
+		// Two web requests (or a request and a worker) each load the model, then each train one
+		// document.  Whichever writes second must add to what the first wrote, not overwrite it
+		// with counts computed from its own stale snapshot.
+		$storage = $this->storage();
+		$seed = new TNaiveBayesClassifier();
+		$seed->setStorage($storage);
+		$seed->setName('m');
+		$seed->trainOne('spam', 'cheap pills');
+		$seed->trainOne('ham', 'team meeting');
+		$seed->save();
+
+		$first = new TNaiveBayesClassifier();
+		$first->setStorage($this->storageFor($storage));
+		$first->load('m');
+		$second = new TNaiveBayesClassifier();
+		$second->setStorage($this->storageFor($storage));
+		$second->load('m');
+
+		$first->trainOne('spam', 'cheap watches');
+		$second->trainOne('spam', 'cheap lottery prize');
+		$second->trainOne('news', 'brand new category');
+
+		$reader = new TNaiveBayesClassifier();
+		$reader->setStorage($this->storageFor($storage));
+		$reader->load('m');
+		$vocabulary = $reader->getVocabulary();
+		self::assertSame(5, $vocabulary->getTotalDocuments(), 'every document counts');
+		self::assertSame(10, $vocabulary->getVocabularySize(), 'cheap pills team meeting watches lottery prize brand new category');
+		self::assertSame(3, $vocabulary->getCategory('spam')->getDocumentCount());
+		self::assertSame(7, $vocabulary->getCategory('spam')->getTotalTokens());
+		self::assertSame(1, $vocabulary->getCategory('news')->getDocumentCount());
+		self::assertSame(['spam', 'ham', 'news'], $vocabulary->getCategoryNames(), 'a category another writer added is present');
+		$rows = $storage->loadTokens('m', ['cheap', 'watches', 'prize']);
+		self::assertSame(3, $rows['cheap']['spam']['count']);
+		self::assertSame(3, $rows['cheap']['spam']['docCount']);
+		self::assertSame(1, $rows['watches']['spam']['count']);
+		self::assertSame(1, $rows['prize']['spam']['count']);
+
+		// The writer that trained last also sees the true totals, not its own snapshot plus one.
+		self::assertSame(5, $second->getVocabulary()->getTotalDocuments());
+		self::assertSame(10, $second->getVocabulary()->getVocabularySize());
+		// A model trained through two instances scores exactly as one trained resident.
+		$resident = new TNaiveBayesClassifier();
+		foreach ([['spam', 'cheap pills'], ['ham', 'team meeting'], ['spam', 'cheap watches'], ['spam', 'cheap lottery prize'], ['news', 'brand new category']] as [$category, $document]) {
+			$resident->trainOne($category, $document);
+		}
+		foreach (['cheap prize', 'team', 'brand new'] as $probe) {
+			self::assertSame($resident->score($probe), $reader->score($probe), $probe);
+		}
+	}
+
+	/** Opens a second, independent storage on the same database file. */
+	private function storageFor(TSqlBayesianStorage $storage): TSqlBayesianStorage
+	{
+		$other = new TSqlBayesianStorage();
+		$other->setConnectionString($storage->getConnectionString());
+		$other->setMode($storage->getMode());
+		return $other;
+	}
+
+	public function testApplyDeltasAcceptsNegativeDeltasClampedAtZero()
+	{
+		// An "untrain" needs to subtract.  A count can never go below zero, and removing a
+		// document never shrinks the vocabulary: a token that was seen stays seen.
+		$storage = $this->storage();
+		$source = new TNaiveBayesClassifier();
+		$source->setStorage($storage);
+		$source->setName('m');
+		$source->trainOne('spam', 'cheap cheap pills');
+		$source->trainOne('ham', 'team meeting');
+		$source->save();
+
+		$storage->applyDeltas('m', 'spam', ['cheap' => ['count' => -1, 'docCount' => 0]], [], ['documentCount' => 0, 'totalTokens' => -1]);
+		$rows = $storage->loadTokens('m', ['cheap']);
+		self::assertSame(1, $rows['cheap']['spam']['count']);
+		self::assertSame(1, $rows['cheap']['spam']['docCount']);
+		self::assertSame(2, $storage->loadTokenCategories('m')['spam']['totalTokens']);
+
+		$storage->applyDeltas('m', 'spam', ['cheap' => ['count' => -10, 'docCount' => -10], 'pills' => ['count' => -10, 'docCount' => -10]], [], ['documentCount' => -10, 'totalTokens' => -10]);
+		$rows = $storage->loadTokens('m', ['cheap', 'pills']);
+		self::assertSame(0, $rows['cheap']['spam']['count'], 'clamped at zero');
+		self::assertSame(0, $rows['cheap']['spam']['docCount']);
+		self::assertSame(0, $rows['pills']['spam']['count']);
+		$categories = $storage->loadTokenCategories('m');
+		self::assertSame(0, $categories['spam']['documentCount']);
+		self::assertSame(0, $categories['spam']['totalTokens']);
+		$meta = $storage->loadTokenMeta('m');
+		self::assertSame(1, $meta['totalDocuments'], 'only the ham document remains: the total is the sum of the category counts');
+		self::assertSame(2, $meta['vocabularySize'], 'cheap and pills, which no document contains any more, left the vocabulary');
+
+		// A negative delta for a token the model has never seen leaves it out of the
+		// vocabulary: nothing went below zero, and no document contains it.
+		$storage->applyDeltas('m', 'spam', ['never' => ['count' => -3, 'docCount' => -1]], [], ['documentCount' => 0, 'totalTokens' => 0]);
+		$rows = $storage->loadTokens('m', ['never']);
+		self::assertSame(0, $rows['never']['spam']['count'] ?? 0);
+		self::assertSame(0, $rows['never']['spam']['docCount'] ?? 0);
+		self::assertSame(2, $storage->loadTokenMeta('m')['vocabularySize']);
+	}
+
+	public function testCountersAreDerivedFromTheTablesNotFromTheMetaArgument()
+	{
+		// Whatever a writer believes the totals are is irrelevant; the stored counters come from
+		// what was actually written.
+		$storage = $this->storage();
+		$source = new TNaiveBayesClassifier();
+		$source->setStorage($storage);
+		$source->setName('m');
+		$source->trainOne('spam', 'cheap pills');
+		$source->save();
+		$storage->applyDeltas('m', 'spam', ['new' => ['count' => 1, 'docCount' => 1]], ['totalDocuments' => 999, 'vocabularySize' => 999, 'kind' => 'naive-bayes'], ['documentCount' => 1, 'totalTokens' => 1]);
+		$meta = $storage->loadTokenMeta('m');
+		self::assertSame(2, $meta['totalDocuments']);
+		self::assertSame(3, $meta['vocabularySize']);
+		self::assertSame('naive-bayes', $meta['kind'], 'the rest of the metadata is stored as given');
+		self::assertSame(TSqlBayesianStorage::TOKEN_LAYOUT_VERSION, $meta['layoutVersion']);
+	}
+
+	public function testALegacyTokenLayoutIsUpgradedOnFirstRead()
+	{
+		// 0.1.0 wrote no vocabulary or counters tables and kept the totals inside the metadata
+		// JSON.  Such a model must keep working, with its counters rebuilt from its rows.
+		$storage = $this->storage();
+		$storage->save('legacy', ['kind' => 'naive-bayes', 'tokenMode' => true, 'totalDocuments' => 3, 'vocabularySize' => 4, 'categoryOrder' => ['spam', 'ham'], 'alpha' => 1.0]);
+		$connection = $storage->getDbConnection();
+		$table = $storage->getTable();
+		$connection->createCommand("INSERT INTO {$table}_categories (model, category, doc_count, total_tokens) VALUES ('legacy', 'spam', 2, 4), ('legacy', 'ham', 1, 2)")->execute();
+		$connection->createCommand("INSERT INTO {$table}_tokens (model, token, category, cnt, doccnt) VALUES ('legacy', 'cheap', 'spam', 3, 2), ('legacy', 'pills', 'spam', 1, 1), ('legacy', 'team', 'ham', 1, 1), ('legacy', 'meeting', 'ham', 1, 1)")->execute();
+		foreach (['_vocab', '_counters'] as $suffix) {
+			$connection->createCommand("DELETE FROM {$table}{$suffix} WHERE model = 'legacy'")->execute();
+		}
+
+		$meta = $storage->loadTokenMeta('legacy');
+		self::assertSame(3, $meta['totalDocuments']);
+		self::assertSame(4, $meta['vocabularySize']);
+		self::assertSame(TSqlBayesianStorage::TOKEN_LAYOUT_VERSION, $meta['layoutVersion'], 'the model is stamped with the current layout');
+		self::assertSame(4, (int) $connection->createCommand("SELECT COUNT(*) FROM {$table}_vocab WHERE model = 'legacy'")->queryScalar());
+
+		$loaded = new TNaiveBayesClassifier();
+		$loaded->setStorage($storage);
+		$loaded->load('legacy');
+		self::assertSame('spam', $loaded->classify('cheap'));
+		// ... and incremental training on the upgraded model keeps the counters exact.
+		$loaded->trainOne('spam', 'cheap offer');
+		$meta = $storage->loadTokenMeta('legacy');
+		self::assertSame(4, $meta['totalDocuments']);
+		self::assertSame(5, $meta['vocabularySize']);
+	}
+
+	public function testANewerTokenLayoutIsRefused()
+	{
+		$storage = $this->storage();
+		$storage->save('future', ['kind' => 'naive-bayes', 'tokenMode' => true, 'layoutVersion' => TSqlBayesianStorage::TOKEN_LAYOUT_VERSION + 1]);
+		try {
+			$storage->loadTokenMeta('future');
+			self::fail('expected a newer layout to be refused');
+		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+			self::assertSame('bayesian_storage_layout_unsupported', $e->getErrorCode());
+		}
+	}
+
+	public function testDeleteRemovesTheVocabularyAndCounterRows()
+	{
+		$storage = $this->storage();
+		$source = new TNaiveBayesClassifier();
+		$source->setStorage($storage);
+		$source->setName('m');
+		$this->train($source)->save();
+		$storage->delete('m');
+		$connection = $storage->getDbConnection();
+		$table = $storage->getTable();
+		self::assertSame(0, (int) $connection->createCommand("SELECT COUNT(*) FROM {$table}_vocab WHERE model = 'm'")->queryScalar());
+		self::assertSame(0, (int) $connection->createCommand("SELECT COUNT(*) FROM {$table}_counters WHERE model = 'm'")->queryScalar());
+	}
+
+	public function testTokensLongerThanTheColumnRoundTrip()
+	{
+		// MySQL and PostgreSQL store tokens in VARCHAR(191); a URL from a regex tokenizer or a
+		// run of characters is easily longer.  The storage must take it, and give it back under
+		// the original token, with two distinct long tokens kept apart.
+		$storage = $this->storage();
+		$long = str_repeat('a', 300);
+		$other = str_repeat('a', 299) . 'b';
+		$multibyte = str_repeat('é', 250);
+		$source = new TNaiveBayesClassifier();
+		$source->setStorage($storage);
+		$source->setName('m');
+		$source->trainOne('x', [$long, $long, $multibyte]);
+		$source->trainOne('y', [$other]);
+		$source->save();
+		$rows = $storage->loadTokens('m', [$long, $other, $multibyte, 'absent']);
+		self::assertSame(2, $rows[$long]['x']['count']);
+		self::assertSame(1, $rows[$other]['y']['count']);
+		self::assertSame(1, $rows[$multibyte]['x']['count']);
+		self::assertArrayNotHasKey($other, $rows[$long] ?? [], 'distinct long tokens do not share a row');
+		self::assertArrayNotHasKey('absent', $rows);
+		$loaded = new TNaiveBayesClassifier();
+		$loaded->setStorage($storage);
+		$loaded->load('m');
+		self::assertSame(3, $loaded->getVocabulary()->getVocabularySize());
+		self::assertSame('x', $loaded->classify([$long]));
+		$loaded->trainOne('y', [$long]);
+		$rows = $storage->loadTokens('m', [$long]);
+		self::assertSame(1, $rows[$long]['y']['count'], 'incremental training reaches the same row');
+		self::assertSame(3, $storage->loadTokenMeta('m')['vocabularySize'], 'an encoded token is still one vocabulary entry');
+	}
+
+	public function testTableNameLengthIsBounded()
+	{
+		$storage = $this->storage();
+		$storage->setTable(str_repeat('t', 48));
+		self::assertSame(str_repeat('t', 48), $storage->getTable());
+		$this->expectException(\Prado\Exceptions\TInvalidDataValueException::class);
+		$storage->setTable(str_repeat('t', 49));
+	}
+	public function testThePrefetchedBatchIsBounded()
+	{
+		// A worker that scores documents for hours must not hold every token it ever read.
+		$storage = $this->storage();
+		$source = new TNaiveBayesClassifier();
+		$source->setStorage($storage);
+		$source->setName('m');
+		$this->train($source)->save();
+		$loaded = new TNaiveBayesClassifier();
+		$loaded->setStorage($storage);
+		$loaded->load('m');
+		/** @var TLazyBayesianVocabulary $vocabulary */
+		$vocabulary = $loaded->getVocabulary();
+		self::assertSame(TLazyBayesianVocabulary::DEFAULT_MAX_BATCH_TOKENS, $vocabulary->getMaxBatchTokens());
+		$vocabulary->setMaxBatchTokens(4);
+		self::assertSame(4, $vocabulary->getMaxBatchTokens());
+
+		$vocabulary->prefetch(['cheap', 'pills']);
+		self::assertTrue($vocabulary->hasToken('cheap'));
+		$vocabulary->prefetch(['meeting']);
+		self::assertTrue($vocabulary->hasToken('cheap'), 'within the cap the batch accumulates');
+		self::assertTrue($vocabulary->hasToken('meeting'));
+		// This fetch would make five: the batch restarts from the new document only.
+		$vocabulary->prefetch(['report', 'review']);
+		self::assertTrue($vocabulary->hasToken('report'));
+		self::assertTrue($vocabulary->hasToken('review'));
+		self::assertFalse($vocabulary->hasToken('cheap'), 'the earlier tokens were dropped');
+		// A document longer than the cap is still fetched whole.
+		$vocabulary->prefetch(['cheap', 'pills', 'buy', 'now', 'watches', 'prices']);
+		foreach (['cheap', 'pills', 'buy', 'now', 'watches', 'prices'] as $token) {
+			self::assertTrue($vocabulary->hasToken($token), $token);
+		}
+		self::assertSame(0, $vocabulary->getMaxBatchTokens() < 1 ? 1 : 0);
+		$vocabulary->setMaxBatchTokens(0);
+		self::assertSame(1, $vocabulary->getMaxBatchTokens(), 'the cap is at least one token');
+		// Scores are unaffected by any of this.
+		self::assertSame($source->score('cheap prices now'), $loaded->score('cheap prices now'));
+	}
+	public function testUntrainingAgainstStorageMatchesTheResidentModel()
+	{
+		$storage = $this->storage();
+		$seed = new TNaiveBayesClassifier();
+		$seed->setStorage($storage);
+		$seed->setName('m');
+		$seed->trainOne('spam', 'cheap pills');
+		$seed->trainOne('ham', 'team meeting');
+		$seed->trainOne('spam', 'cheap watches lottery');
+		$seed->trainOne('news', 'brand new category');
+		$seed->save();
+
+		$writer = new TNaiveBayesClassifier();
+		$writer->setStorage($this->storageFor($storage));
+		$writer->load('m');
+		$writer->untrainOne('spam', 'cheap watches lottery');
+		$writer->untrainOne('news', 'brand new category');
+
+		$resident = new TNaiveBayesClassifier();
+		$resident->trainOne('spam', 'cheap pills');
+		$resident->trainOne('ham', 'team meeting');
+
+		$reader = new TNaiveBayesClassifier();
+		$reader->setStorage($this->storageFor($storage));
+		$reader->load('m');
+		$vocabulary = $reader->getVocabulary();
+		self::assertSame(2, $vocabulary->getTotalDocuments());
+		self::assertSame($resident->getVocabulary()->getVocabularySize(), $vocabulary->getVocabularySize(), 'tokens no document contains have left the vocabulary');
+		self::assertSame(['spam', 'ham'], $vocabulary->getCategoryNames(), 'a category with no documents is not present');
+		$vocabulary->prefetch(['watches', 'cheap']);
+		self::assertFalse($vocabulary->hasToken('watches'));
+		self::assertTrue($vocabulary->hasToken('cheap'));
+		foreach (['cheap pills', 'team', 'watches lottery', 'brand new'] as $probe) {
+			self::assertSame($resident->score($probe), $reader->score($probe), $probe);
+		}
+		self::assertSame(2, $writer->getVocabulary()->getTotalDocuments(), 'the writer re-read the totals');
+
+		// Training the token again brings it back into the vocabulary once.
+		$writer->trainOne('spam', 'watches');
+		$writer->trainOne('spam', 'watches');
+		self::assertSame($resident->getVocabulary()->getVocabularySize(), $reader->getVocabulary()->getVocabularySize(), 'the reader snapshot is unchanged until refreshed');
+		$reader->getVocabulary()->refresh();
+		self::assertSame($resident->getVocabulary()->getVocabularySize() + 1, $reader->getVocabulary()->getVocabularySize());
+	}
 }

@@ -245,6 +245,48 @@ class TBayesianVocabulary implements IBayesianVocabulary
 	}
 
 	/**
+	 * Withdraws one training document from the named category, reversing {@see addDocument()}:
+	 * the category's document count, its per-token counts and per-token document counts, and
+	 * the document-frequency map all go down by what the document contributed, each stopping
+	 * at zero.  A token whose document frequency reaches zero leaves the vocabulary (so |V|
+	 * shrinks), and a category left without documents is removed.
+	 * @param string $category The category name.
+	 * @param string[] $tokens The document's tokens (with multiplicity).
+	 * @since 0.2.0
+	 */
+	public function removeDocument(string $category, array $tokens): void
+	{
+		$cat = $this->_categories[$category] ?? null;
+		if ($cat === null) {
+			return;
+		}
+		$cat->removeDocument();
+		$this->_totalDocuments = max(0, $this->_totalDocuments - 1);
+		$this->_generation++;
+		$seen = [];
+		foreach ($tokens as $token) {
+			$token = (string) $token;
+			$cat->removeToken($token);
+			$seen[$token] = true;
+		}
+		foreach ($seen as $token => $_) {
+			$token = (string) $token;
+			if ($cat->getTokenDocumentCount($token) > 0) {
+				$cat->removeTokenDocument($token);
+				$frequency = ($this->_documentFrequency[$token] ?? 0) - 1;
+				if ($frequency <= 0) {
+					unset($this->_documentFrequency[$token]);
+				} else {
+					$this->_documentFrequency[$token] = $frequency;
+				}
+			}
+		}
+		if ($cat->getDocumentCount() === 0) {
+			unset($this->_categories[$category]);
+		}
+	}
+
+	/**
 	 * Replaces the entire vocabulary (used when restoring from storage).
 	 * @param TBayesianCategory[] $categories The categories.
 	 * @param array<string, int> $documentFrequency The document frequencies.

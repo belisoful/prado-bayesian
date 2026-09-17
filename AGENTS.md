@@ -3,13 +3,15 @@
 ## Build, Lint, and Test Commands
 
 ### Running Tests
-- **All Unit Tests**: `vendor/bin/phpunit --testsuite unit` - runs all unit tests
+- **All Unit Tests**: `composer unittest` (`vendor/bin/phpunit --testsuite unit`) - runs all unit tests
 - **Test Filter**: `vendor/bin/phpunit --testsuite unit --filter <test function, class, or directory>`
+- **Backend suites**: the SQL/Redis tests skip without a server; see CONTRIBUTING.md for the `BAYESIAN_*` environment variables that enable them (`BAYESIAN_REQUIRE_BACKENDS=1` turns a skip into a failure, as CI does)
 
 ### Linting and Code Analysis
-- **PHPStan Analysis**: `vendor/bin/phpstan analyse src/ --memory-limit=512M`
-- **PHP CS Fixer (Dry-run)**: `vendor/bin/php-cs-fixer fix --dry-run src/` (check)
-- **PHP CS Fixer (Fix)**: `vendor/bin/php-cs-fixer fix src/` (apply fixes)
+- **Full check**: `composer fulltest` runs, in order, `composer lint` (`php -l` on src/ and tests/), `composer cs` (php-cs-fixer dry run), `composer stan` (PHPStan level 9, analysed as PHP 8.5) and `composer unittest`
+- **PHPStan Analysis**: `composer stan` (`vendor/bin/phpstan analyse --memory-limit=512M`)
+- **PHP CS Fixer (Dry-run)**: `composer cs` (check)
+- **PHP CS Fixer (Fix)**: `composer fix` (apply fixes)
 
 ### Build Commands
 - **Install Dependencies**: `composer install` - installs all dependencies
@@ -35,7 +37,7 @@
 - Method names: `camelCase` (e.g., `getComponent`)
 - Variables: `camelCase` (e.g., `$componentName`)
 - Constants: `SCREAMING_SNAKE_CASE` (e.g., `MAX_RETRY_COUNT`)
-- Namespace: `Prado\{Module}` (e.g., `Prado\Web\UI\TControl`)
+- Namespace: `Belisoful\Prado\{Module}` (e.g. `Belisoful\Prado\Util\Bayesian\TBayesianModule`); the bare `Prado\` prefix belongs to the framework
 - Interface prefix: `I*` (e.g., `IBayesianClassifier`)
 - Template file extension: ".tpl"
 - Web Page template file extension: ".page"
@@ -81,10 +83,10 @@
 - getAutoGlobalListen() is optimized by class hierarchy for utility and performance
 - All events are raised in specified priority order
 - XML and PHP is supported for application configuration
-- 'framework/classes.php' MUST be updated with all new classes.
-- A full check consists of the 4 checks (in order): `php -l` compile, php-cs-fixer, phpstan, phpunit (all checks must pass successfully)
+- New public classes are added to `config/prado-bayesian-classes.json` (never to the framework's `classes.php`); `tests/unit/PackageClassMapTest.php` fails otherwise.
+- A full check consists of the 4 checks (in order): `php -l` compile, php-cs-fixer, phpstan, phpunit (all checks must pass successfully): `composer fulltest`
 - A full check must be done for code to be ready for git commit.
-- The current version is 0.1.0 (pre-release). New classes/methods use `@since 0.1.0`; the first stable release will be 1.0.0.
+- The released version is 0.1.0 and the next release is 0.2.0 (both pre-1.0). New classes/methods use `@since 0.2.0`; the first stable release will be 1.0.0. Every behavior change goes under `[Unreleased]` in CHANGELOG.md, with migration notes for anything breaking.
 - This extension namespaces its classes under `Belisoful\Prado\Util\Bayesian\` (PSR-4 `Belisoful\Prado\` → `src/`); the `Prado\` prefix belongs to the framework and is never written to by this package. Extensions do NOT update the framework's `classes.php`.
 - Error codes live in `config/errorMessages.txt`, registered system-wide via `extra.prado.error-messages` in `composer.json`; the framework's `messages.txt` is not used.
 - The Prado3-style short class name → PHP FQN class map lives in `config/prado-bayesian-classes.json`, registered system-wide via `extra.prado.class-map` in `composer.json`.
@@ -102,7 +104,7 @@
 - NEVER add/change phpunit command options when unit testing; only run project unit tests as specified
 
 ## Development Environment
-- PHP 8.1 or higher required
+- PHP 8.1 to 8.5 supported; CI runs every version, and 8.4/8.5 must stay deprecation-free (run the suite under them with `--display-deprecations` when touching reflection, casts or string coercion)
 - PHP extensions: ctype, dom, intl, json, mbstring, pcre, spl (typical)
 - Optional extensions for additional features: pdo, redis
 - Composer for dependency management

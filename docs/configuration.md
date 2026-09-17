@@ -191,15 +191,72 @@ classifies and recommends, and offers no training, saving, or deletion.
 
 `ModuleID` names the `TBayesianModule` to source the classifier from; without it the service uses
 the first `TBayesianModule` registered in the application. `MaxTextLength` caps the `text`
-parameter in bytes (default 65536); set `0` to disable. The endpoint is unauthenticated and
-classification cost grows with input size, so the cap bounds what one request can demand.
+parameter, the joined `context` list and each `candidates` entry, in bytes (default 65536);
+`MaxCandidates` caps the number of candidates a `recommend` request may send (default 100). Set
+either to `0` to disable it. Classification cost grows with input size and every candidate costs a
+classification, so the caps bound what one request can demand. `TagThreshold` (default 0.5) and
+`MaxTags` (default 0, unlimited) shape the `tag` action, which runs a `TBayesianTagger` over the
+service's classifier — a `TNaiveBayesClassifier` trained through a tagger.
+
+### Access control
+
+> **The service enforces nothing by default.** Every request that reaches it is answered, each
+> one costs a classification, and the scores describe your model. Do not expose it publicly
+> without one of the two restrictions below, or a reverse proxy that restricts it for you.
+
+Both mechanisms are PRADO's own and both are opt-in.
+
+**Authorization rules** are the `<allow>`/`<deny>` rules a page uses, declared inside an
+`<authorization>` child of the service element (or an `authorization` list in PHP configuration),
+with the usual `users`, `roles`, `verb`, `ips` and `priority` attributes. The service evaluates
+them in `run()` against the application user before doing any work. Code can add rules too,
+through `getAuthorizationRules()`.
+
+```xml
+<services>
+    <service id="bayesian" class="TBayesianService" ModuleID="bayesian">
+        <authorization>
+            <allow roles="editor" />
+            <deny users="*" />
+        </authorization>
+    </service>
+</services>
+```
+
+```php
+'services' => [
+    'bayesian' => [
+        'class' => 'TBayesianService',
+        'properties' => ['ModuleID' => 'bayesian'],
+        'authorization' => [
+            ['action' => 'allow', 'roles' => 'editor'],
+            ['action' => 'deny', 'users' => '*'],
+        ],
+    ],
+],
+```
+
+A refused guest gets `401` and a refused authenticated user `403`, both as JSON
+(`bayesian_service_unauthorized`). Rules need a user to evaluate against, which means an
+authentication module (`TAuthManager` with a user manager) must be configured. When rules exist
+but no user is on the application, the request is refused with `401`
+`bayesian_service_user_required` rather than let through: a service meant to be restricted must
+never fall open because of a second configuration mistake.
+
+**Permissions**: the service implements `IPermissions` and registers three permissions,
+`bayesian_classify`, `bayesian_recommend` and `bayesian_tag`, with the application's
+`TPermissionsManager` when one is configured. Each action then first raises its dynamic event
+(`dyClassify` / `dyRecommend` / `dyTag`), which the permissions behavior answers from the current user's roles and the
+manager's rules; a user without the permission gets `401`/`403` `bayesian_service_permission_denied`.
+With the manager's default `AutoDenyAll`, configuring it locks the service down until a rule or a
+role grants the permission. Without a permissions manager the events are inert.
 
 ### Requests
 
 | Parameter | Action | Meaning |
 | --- | --- | --- |
-| `action` | both | `classify` (the default) or `recommend` |
-| `text` | classify | The document to classify |
+| `action` | all | `classify` (the default), `recommend` or `tag` |
+| `text` | classify, tag | The document to classify or tag |
 | `category` | classify | Optional; adds `isSpam` to the response — whether the prediction equals this category |
 | `context[]` | recommend | The items the user has already interacted with |
 | `candidates[]` | recommend | The items to rank |
@@ -207,10 +264,19 @@ classification cost grows with input size, so the cap bounds what one request ca
 ### Responses
 
 `classify` returns the predicted category and the full distribution, plus `isSpam` when
-`category` was given:
+`category` was given. `calibrated` says whether the scores are calibrated probabilities (the
+classifier has a fitted calibration) or the plain normalized Naive Bayes scores:
 
 ```json
-{"category": "ham", "scores": {"spam": 0.13, "ham": 0.87}, "isSpam": false}
+{"category": "ham", "scores": {"spam": 0.13, "ham": 0.87}, "calibrated": false, "isSpam": false}
+```
+
+`tag` returns the labels whose probability reaches `TagThreshold`, highest first, at most
+`MaxTags` of them, and whether the tagger's probabilities are calibrated. The map is always a
+JSON object, even when empty:
+
+```json
+{"tags": {"php": 0.91, "security": 0.78}, "calibrated": true}
 ```
 
 `recommend` returns candidates ordered by P(positive). The map is always encoded as a JSON
@@ -229,7 +295,9 @@ Errors are JSON too, with a matching HTTP status:
 | Status | When |
 | --- | --- |
 | 400 | Missing or non-string `text`, an array where a scalar was expected, no candidates, unknown `action` |
-| 413 | `text` exceeds `MaxTextLength` |
+| 401 | Access refused for a guest, or rules are configured but the application has no user; also a denied permission for an anonymous caller |
+| 403 | Access refused for an authenticated user, by a rule or a missing permission |
+| 413 | `text`, the joined `context` or a candidate exceeds `MaxTextLength`, or more than `MaxCandidates` candidates were sent |
 | 503 | The classifier has not been trained yet |
 
 A server-side misconfiguration — no classifier resolvable at all — propagates to the framework's
@@ -253,6 +321,17 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | `bayesian_classifier_class_invalid` | A configured classifier class does not implement `IBayesianClassifier` |
 | `bayesian_classifier_id_unknown` | `getClassifier($id)` named a classifier the module was not configured with |
 
+### Calibration and tagging
+
+| Code | Raised when |
+| --- | --- |
+| `bayesian_calibration_temperature_invalid` | A `TTemperatureScaling` temperature is not a positive finite number |
+| `bayesian_calibration_parameters_invalid` | A `TPlattScaling` slope or intercept is not finite |
+| `bayesian_calibration_samples_mismatch` | The predictions and labels given to a calibration or metric differ in length |
+| `bayesian_calibration_set_empty` | A calibration or metric received no usable labeled example |
+| `bayesian_tagger_label_reserved` | A tag equals the tagger's `BackgroundCategory` |
+| `bayesian_tagger_classifier_invalid` | The service's classifier is not a `TNaiveBayesClassifier`, so no tagger can be built over it |
+
 ### Persistence
 
 | Code | Raised when |
@@ -262,8 +341,9 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | `bayesian_classifier_model_missing` | `load()` named a model the storage does not hold |
 | `bayesian_classifier_kind_mismatch` | Loading a payload saved by a different classifier variant |
 | `bayesian_storage_class_invalid` | A configured storage class does not implement `IBayesianStorage` |
-| `bayesian_storage_name_invalid` | A model name is empty, or holds a path separator or null byte |
+| `bayesian_storage_name_invalid` | A model name is empty, starts with a dot, holds a path separator or null byte, or (Redis) contains the reserved sequence `:__` |
 | `bayesian_storage_encode_failed` | The payload could not be encoded to JSON |
+| `bayesian_model_format_unsupported` | A payload's `formatVersion` is newer than this release reads |
 
 ### File storage
 
@@ -280,7 +360,7 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | `bayesian_storage_pdo_missing` | `ext-pdo` is not loaded |
 | `bayesian_storage_pdo_dsn_required` | No DSN, connection, or `ConnectionID` was configured |
 | `bayesian_storage_pdo_connect_failed` | The connection could not be opened, or `ConnectionID` names no module |
-| `bayesian_storage_table_invalid` | `Table` is not a plain SQL identifier |
+| `bayesian_storage_table_invalid` | `Table` is not a plain SQL identifier of at most 48 characters |
 | `bayesian_storage_mode_invalid` | `Mode` is neither `payload` nor `token` |
 
 ### Per-token storage
@@ -291,7 +371,8 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | `bayesian_classifier_token_mode_payload` | A model stored per token was read through the whole-payload path |
 | `bayesian_vocabulary_full_scan_unavailable` | The whole vocabulary was requested from a storage-backed model, or such a model was asked to save itself |
 | `bayesian_vocabulary_readonly` | A storage-backed vocabulary was mutated directly instead of through the classifier |
-| `bayesian_classifier_aggregate_missing` | A Bernoulli or Complement model is storage-backed and its full-scan aggregate was neither stored nor recomputable |
+| `bayesian_classifier_aggregate_missing` | A Bernoulli or Complement model is storage-backed and its full-scan aggregate was neither stored nor recomputable (see [Storage → Incremental training and the variants](storage.md#incremental-training-and-the-variants)) |
+| `bayesian_storage_layout_unsupported` | A per-token model's `layoutVersion` is newer than this release reads |
 
 ### Model conversion
 
@@ -332,7 +413,12 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | Code | Raised when |
 | --- | --- |
 | `bayesian_service_text_required` | The `text` parameter is missing |
-| `bayesian_service_text_too_long` | `text` exceeds `MaxTextLength` |
+| `bayesian_service_text_too_long` | `text`, the joined `context` or a candidate exceeds `MaxTextLength` |
+| `bayesian_service_candidates_too_many` | More than `MaxCandidates` candidates were sent |
 | `bayesian_service_parameter_invalid` | A parameter has the wrong shape |
-| `bayesian_service_action_unknown` | `action` is neither `classify` nor `recommend` |
+| `bayesian_service_action_unknown` | `action` is none of `classify`, `recommend` and `tag` |
 | `bayesian_service_classifier_missing` | No default classifier could be resolved |
+| `bayesian_service_unauthorized` | The authorization rules refused the current user |
+| `bayesian_service_user_required` | Authorization rules are configured but the application has no user |
+| `bayesian_service_permission_denied` | The current user lacks the action's permission |
+| `bayesian_service_rule_invalid` | A configured rule is neither `allow` nor `deny` |

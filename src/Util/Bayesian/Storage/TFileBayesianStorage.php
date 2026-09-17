@@ -10,6 +10,7 @@
 
 namespace Belisoful\Prado\Util\Bayesian\Storage;
 
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Prado\Exceptions\TConfigurationException;
 use Prado\Exceptions\TIOException;
 use Prado\Exceptions\TInvalidDataValueException;
@@ -25,7 +26,15 @@ use Prado\TComponent;
  *
  * The JSON encoding uses {@see JSON_UNESCAPED_SLASHES} and {@see JSON_UNESCAPED_UNICODE} so
  * the on-disk files stay human-readable for non-ASCII training data and URLs in token sets.
- * Atomicity is provided by writing to a sibling `<name>.json.tmp` and renaming on success.
+ * Atomicity is provided by writing to a unique sibling temp file and renaming on success, so a
+ * reader never sees a partial file.  A save still replaces the whole model, though: two
+ * processes that each load, train and save the same model lose one another's documents.  This
+ * is a single-writer backend; concurrent training needs the per-token mode of the SQL or Redis
+ * storage.
+ *
+ * Files are created with {@see setFileMode FileMode} (default `0644`) and the directory with
+ * {@see setDirectoryMode DirectoryMode} (default `0755`).  A model holds the tokens of its
+ * training data, so tighten these when other accounts on the host must not read it.
  *
  * @author Brad Anderson <belisoful@icloud.com>
  * @since 0.1.0
@@ -34,6 +43,12 @@ class TFileBayesianStorage extends TComponent implements IBayesianStorage
 {
 	/** @var ?string The directory holding the model files. */
 	private ?string $_directory = null;
+
+	/** @var int The permission bits of a model file. */
+	private int $_fileMode = 0o644;
+
+	/** @var int The permission bits of a directory this storage creates. */
+	private int $_directoryMode = 0o755;
 
 	/** @var int The JSON encoding flags. */
 	private const JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT;
@@ -47,7 +62,7 @@ class TFileBayesianStorage extends TComponent implements IBayesianStorage
 		if ($this->_directory === null || $this->_directory === '') {
 			throw new TConfigurationException('bayesian_storage_directory_required');
 		}
-		if (!is_dir($this->_directory) && !@mkdir($this->_directory, 0o755, true) && !is_dir($this->_directory)) {
+		if (!is_dir($this->_directory) && !@mkdir($this->_directory, $this->_directoryMode, true) && !is_dir($this->_directory)) {
 			throw new TConfigurationException('bayesian_storage_directory_unwritable', $this->_directory);
 		}
 		if (!is_writable($this->_directory)) {
@@ -58,14 +73,16 @@ class TFileBayesianStorage extends TComponent implements IBayesianStorage
 	/**
 	 * Returns the absolute path of the file backing a model.  The name is validated first: a
 	 * path separator or null byte in the name could otherwise escape the storage directory
-	 * (e.g. "../../etc/passwd"), so such names are rejected rather than resolved.
+	 * (e.g. "../../etc/passwd"), so such names are rejected rather than resolved, and a name
+	 * starting with a dot is rejected because a dotfile would be saved but never listed (the
+	 * in-progress temp files are dotfiles by design).
 	 * @param string $name The model name.
-	 * @throws TInvalidDataValueException When the name is empty or contains a path separator or null byte.
+	 * @throws TInvalidDataValueException When the name is empty, starts with a dot, or contains a path separator or null byte.
 	 * @return string The file path.
 	 */
 	private function path(string $name): string
 	{
-		if ($name === '' || strpbrk($name, "/\\\0") !== false) {
+		if ($name === '' || $name[0] === '.' || strpbrk($name, "/\\\0") !== false) {
 			throw new TInvalidDataValueException('bayesian_storage_name_invalid', $name);
 		}
 		return rtrim($this->_directory ?? '', DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name . '.json';
@@ -97,7 +114,7 @@ class TFileBayesianStorage extends TComponent implements IBayesianStorage
 			@unlink($tmp);
 			throw new TIOException('bayesian_storage_save_failed', $tmp);
 		}
-		@chmod($tmp, 0o644);
+		@chmod($tmp, $this->_fileMode);
 		if (!@rename($tmp, $path)) {
 			@unlink($tmp);
 			throw new TIOException('bayesian_storage_save_failed', $path);
@@ -128,7 +145,7 @@ class TFileBayesianStorage extends TComponent implements IBayesianStorage
 		if (!is_array($decoded)) {
 			return null;
 		}
-		return $decoded;
+		return TBayesianPayload::map($decoded);
 	}
 
 	/**
@@ -204,5 +221,60 @@ class TFileBayesianStorage extends TComponent implements IBayesianStorage
 	public function setDirectory(string $value): void
 	{
 		$this->_directory = $value;
+	}
+
+	/**
+	 * Returns the permission bits given to a model file.
+	 * @return int The mode, e.g. `0644`.
+	 * @since 0.2.0
+	 */
+	public function getFileMode(): int
+	{
+		return $this->_fileMode;
+	}
+
+	/**
+	 * Sets the permission bits given to a model file (default `0644`).  Accepts an integer or
+	 * the octal string a configuration file carries, such as `"0600"`.
+	 * @param int|string $value The mode.
+	 * @since 0.2.0
+	 */
+	public function setFileMode($value): void
+	{
+		$this->_fileMode = self::mode($value);
+	}
+
+	/**
+	 * Returns the permission bits given to a directory this storage creates.
+	 * @return int The mode, e.g. `0755`.
+	 * @since 0.2.0
+	 */
+	public function getDirectoryMode(): int
+	{
+		return $this->_directoryMode;
+	}
+
+	/**
+	 * Sets the permission bits given to a directory this storage creates (default `0755`).
+	 * Accepts an integer or the octal string a configuration file carries, such as `"0700"`.
+	 * @param int|string $value The mode.
+	 * @since 0.2.0
+	 */
+	public function setDirectoryMode($value): void
+	{
+		$this->_directoryMode = self::mode($value);
+	}
+
+	/**
+	 * Normalizes a mode given as an integer or an octal string to its permission bits.
+	 * @param int|string $value The mode.
+	 * @return int The permission bits.
+	 */
+	private static function mode($value): int
+	{
+		if (is_string($value)) {
+			$value = intval($value, 8);
+		}
+		return ((int) $value) & 0o777;
 	}
 }

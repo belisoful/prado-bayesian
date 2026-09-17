@@ -10,6 +10,7 @@
 
 namespace Belisoful\Prado\Util\Bayesian\Tokenizer;
 
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Prado\TComponent;
 
 /**
@@ -251,7 +252,7 @@ class TNGramTokenizer extends TComponent implements IBayesianTokenizer
 	{
 		$this->importConfigProperties($config);
 		if (isset($config['wordTokenizer']) && is_array($config['wordTokenizer'])) {
-			$this->_wordTokenizer->importConfig($config['wordTokenizer']);
+			$this->_wordTokenizer->importConfig(TBayesianPayload::map($config['wordTokenizer']));
 		}
 	}
 

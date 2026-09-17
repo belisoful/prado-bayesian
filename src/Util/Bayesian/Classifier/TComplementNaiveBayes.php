@@ -12,6 +12,7 @@ namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
 use Belisoful\Prado\Util\Bayesian\Math\TFIdf;
 use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Prado\Exceptions\TInvalidOperationException;
 
 /**
@@ -103,10 +104,10 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 	protected function importAggregates(array $aggregates): void
 	{
 		$norms = $aggregates['norms'] ?? null;
-		if (!is_array($norms) || (float) ($aggregates['alpha'] ?? 0.0) !== $this->_alpha) {
+		if (!is_array($norms) || TBayesianPayload::float($aggregates['alpha'] ?? null) !== $this->_alpha) {
 			return;
 		}
-		$this->_norms = array_map('floatval', $norms);
+		$this->_norms = TBayesianPayload::floatMap($norms);
 		$this->_cacheKey = $this->cacheKey();
 	}
 
@@ -213,7 +214,11 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 		// discard the weight magnitudes that discriminate between categories.
 		$norm = $this->categoryNorm($category, $denominator);
 		if ($norm <= 0.0) {
-			return -INF;
+			// Every weight is zero: no token tells this category apart from its complement
+			// (two categories trained on the same text, say).  That is an absence of evidence,
+			// not an impossibility, so the category scores neutrally rather than -INF — which
+			// would make a trained model unable to classify at all.
+			return 0.0;
 		}
 		$logSum = 0.0;
 		foreach ($counts as $token => $count) {

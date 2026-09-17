@@ -162,6 +162,19 @@ trait TBayesianTokenizerTrait
 			TBayesianTokenizerFactory::checkPregError($pattern);
 			return [];
 		}
-		return $result === 0 ? [] : $matches;
+		if ($result === 0) {
+			return [];
+		}
+		// preg_match_all() fills $matches with strings (or null for a group that did not
+		// participate); reading it back through a typed copy is what lets the caller rely on that.
+		$out = [];
+		foreach ($matches as $group => $column) {
+			$typed = [];
+			foreach ((array) $column as $match) {
+				$typed[] = is_string($match) ? $match : '';
+			}
+			$out[(int) $group] = $typed;
+		}
+		return $out;
 	}
 }

@@ -64,12 +64,12 @@ class TBayesianModelConverter
 	/**
 	 * Registers the classifier class a `kind` marker maps to, for a custom classifier variant.
 	 * @param string $kind The kind marker the variant writes into its saved payload.
-	 * @param class-string<IBayesianClassifier> $class The classifier class.
+	 * @param string $class The classifier class name.
 	 * @throws TInvalidDataValueException When the class does not implement {@see IBayesianClassifier}.
 	 */
 	public function registerKind(string $kind, string $class): void
 	{
-		if (!is_a($class, IBayesianClassifier::class, true)) {
+		if (!class_exists($class) || !is_a($class, IBayesianClassifier::class, true)) {
 			throw new TInvalidDataValueException('bayesian_classifier_class_invalid', $class);
 		}
 		$this->_kinds[$kind] = $class;

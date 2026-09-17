@@ -66,6 +66,31 @@ class RecordingHttpResponse extends \Prado\Web\THttpResponse
 	}
 }
 
+/** Denies both service permissions the way TPermissionsBehavior does for a user without them. */
+class DenyingBayesianBehavior extends \Prado\Util\TBehavior
+{
+	/** @var string[] The dynamic events seen. */
+	public array $seen = [];
+
+	public function dyClassify($denied, $callchain)
+	{
+		$this->seen[] = 'dyClassify';
+		return true;
+	}
+
+	public function dyRecommend($denied, $callchain)
+	{
+		$this->seen[] = 'dyRecommend';
+		return true;
+	}
+
+	public function dyTag($denied, $callchain)
+	{
+		$this->seen[] = 'dyTag';
+		return true;
+	}
+}
+
 /** Exposes the protected JSON encoder. */
 class EncodingBayesianService extends TBayesianService
 {
@@ -623,5 +648,429 @@ class TBayesianServiceTest extends PHPUnit\Framework\TestCase
 		} catch (TConfigurationException $e) {
 			self::assertSame('bayesian_service_classifier_missing', $e->getErrorCode());
 		}
+	}
+	// ---- input limits -----------------------------------------------------------------------
+
+	public function testRecommendCandidateCountIsCapped()
+	{
+		$service = $this->trainedService();
+		$service->getRecommender()->setPositiveCategory('spam');
+		self::assertSame(100, $service->getMaxCandidates());
+		$service->setMaxCandidates(2);
+		try {
+			$service->runService(['action' => 'recommend', 'candidates' => ['a', 'b', 'c']]);
+			self::fail('expected exception');
+		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+			self::assertSame('bayesian_service_candidates_too_many', $e->getErrorCode());
+			self::assertStringContainsString('2', $e->getErrorMessage());
+		}
+		// Exactly the cap is accepted; repeats count as sent, since they arrive that way.
+		$response = $service->runService(['action' => 'recommend', 'candidates' => ['cheap', 'offer']]);
+		self::assertCount(2, $response['scores']);
+		$service->setMaxCandidates(0);
+		self::assertSame(0, $service->getMaxCandidates());
+		$response = $service->runService(['action' => 'recommend', 'candidates' => ['a', 'b', 'c', 'd']]);
+		self::assertCount(4, $response['scores']);
+		$service->setMaxCandidates(-3);
+		self::assertSame(0, $service->getMaxCandidates());
+	}
+
+	public function testRecommendContextAndCandidatesHonourMaxTextLength()
+	{
+		$service = $this->trainedService();
+		$service->getRecommender()->setPositiveCategory('spam');
+		$service->setMaxTextLength(10);
+		try {
+			$service->runService(['action' => 'recommend', 'context' => ['cheap', 'offers'], 'candidates' => ['a']]);
+			self::fail('the joined context is 12 bytes');
+		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+			self::assertSame('bayesian_service_text_too_long', $e->getErrorCode());
+			self::assertStringContainsString("'context'", $e->getErrorMessage());
+		}
+		try {
+			$service->runService(['action' => 'recommend', 'context' => ['cheap'], 'candidates' => ['a', str_repeat('b', 11)]]);
+			self::fail('one candidate is 11 bytes');
+		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+			self::assertSame('bayesian_service_text_too_long', $e->getErrorCode());
+			self::assertStringContainsString("'candidates'", $e->getErrorMessage());
+		}
+		$response = $service->runService(['action' => 'recommend', 'context' => ['cheap'], 'candidates' => [str_repeat('b', 10)]]);
+		self::assertCount(1, $response['scores']);
+	}
+
+	public function testRunTooManyCandidatesIs413()
+	{
+		$service = $this->trainedService();
+		$service->setMaxCandidates(1);
+		[$body, $response] = $this->runLive($service, ['action' => 'recommend', 'candidates' => ['a', 'b']]);
+		self::assertSame(413, $response->getStatusCode());
+		self::assertSame('bayesian_service_candidates_too_many', $body['error']);
+	}
+
+	// ---- permissions --------------------------------------------------------------------------
+
+	public function testServiceDeclaresItsPermissions()
+	{
+		$service = new TBayesianService();
+		self::assertInstanceOf(\Prado\Security\Permissions\IPermissions::class, $service);
+		$events = $service->getPermissions(null);
+		self::assertCount(3, $events);
+		$byName = [];
+		foreach ($events as $event) {
+			self::assertInstanceOf(\Prado\Security\Permissions\TPermissionEvent::class, $event);
+			$byName[$event->getName()] = $event->getEvents();
+		}
+		self::assertSame(['dyclassify'], array_map('strtolower', $byName[TBayesianService::PERM_CLASSIFY]));
+		self::assertSame(['dyrecommend'], array_map('strtolower', $byName[TBayesianService::PERM_RECOMMEND]));
+		self::assertSame(['dytag'], array_map('strtolower', $byName[TBayesianService::PERM_TAG]));
+	}
+
+	public function testADeniedPermissionRefusesTheActionBeforeAnyWork()
+	{
+		$service = $this->trainedService();
+		$behavior = new DenyingBayesianBehavior();
+		$service->attachBehavior('deny', $behavior);
+		try {
+			$service->runService(['text' => 'cheap']);
+			self::fail('expected the classify permission to refuse');
+		} catch (\Prado\Exceptions\THttpException $e) {
+			self::assertSame('bayesian_service_permission_denied', $e->getErrorCode());
+			self::assertSame(401, $e->getStatusCode(), 'no application user: the caller is anonymous');
+			self::assertStringContainsString(TBayesianService::PERM_CLASSIFY, $e->getErrorMessage());
+		}
+		try {
+			$service->runService(['action' => 'recommend', 'candidates' => ['x']]);
+			self::fail('expected the recommend permission to refuse');
+		} catch (\Prado\Exceptions\THttpException $e) {
+			self::assertSame('bayesian_service_permission_denied', $e->getErrorCode());
+			self::assertStringContainsString(TBayesianService::PERM_RECOMMEND, $e->getErrorMessage());
+		}
+		self::assertSame(['dyClassify', 'dyRecommend'], $behavior->seen);
+		// Without the behavior the same requests go through: the check is opt-in.
+		$service->detachBehavior('deny');
+		self::assertSame('spam', $service->runService(['text' => 'cheap'])['category']);
+	}
+
+	public function testRunReportsADeniedPermissionAsJson()
+	{
+		$service = $this->trainedService();
+		$service->attachBehavior('deny', new DenyingBayesianBehavior());
+		[$body, $response] = $this->runLive($service, ['text' => 'cheap']);
+		self::assertSame(401, $response->getStatusCode());
+		self::assertSame('bayesian_service_permission_denied', $body['error']);
+	}
+
+	// ---- authorization rules ------------------------------------------------------------------
+
+	public function testAuthorizationRulesAreEmptyByDefault()
+	{
+		$service = new TBayesianService();
+		$rules = $service->getAuthorizationRules();
+		self::assertInstanceOf(\Prado\Security\TAuthorizationRuleCollection::class, $rules);
+		self::assertCount(0, $rules);
+		self::assertSame($rules, $service->getAuthorizationRules());
+	}
+
+	public function testInitReadsRulesFromXmlConfiguration()
+	{
+		$xml = new \Prado\Xml\TXmlDocument();
+		$xml->loadFromString('<service id="bayesian" class="TBayesianService"><authorization><allow roles="editor" verb="post" /><deny users="*" /></authorization></service>');
+		$service = new TBayesianService();
+		$service->init($xml);
+		$rules = $service->getAuthorizationRules();
+		self::assertCount(2, $rules);
+		self::assertSame('allow', $rules->itemAt(0)->getAction());
+		self::assertSame(['editor'], $rules->itemAt(0)->getRoles());
+		self::assertSame('post', $rules->itemAt(0)->getVerb());
+		self::assertSame('deny', $rules->itemAt(1)->getAction());
+		self::assertTrue($rules->itemAt(1)->getEveryoneApplied(), 'users="*" applies to everyone');
+	}
+
+	public function testInitReadsRulesFromPhpConfiguration()
+	{
+		$service = new TBayesianService();
+		$service->init([
+			'class' => 'TBayesianService',
+			'authorization' => [
+				['action' => 'allow', 'users' => 'alice, bob', 'ips' => '10.0.0.*'],
+				['action' => 'deny', 'users' => '*'],
+			],
+		]);
+		$rules = $service->getAuthorizationRules();
+		self::assertCount(2, $rules);
+		self::assertSame(['alice', 'bob'], $rules->itemAt(0)->getUsers());
+		self::assertSame(['10.0.0.*'], $rules->itemAt(0)->getIPRules());
+		self::assertSame('deny', $rules->itemAt(1)->getAction());
+	}
+
+	public function testInitWithoutRulesLeavesTheServiceOpen()
+	{
+		$service = new TBayesianService();
+		$service->init(null);
+		self::assertCount(0, $service->getAuthorizationRules());
+		$service->init(['class' => 'TBayesianService']);
+		self::assertCount(0, $service->getAuthorizationRules());
+	}
+
+	public function testInitRejectsAnUnknownRuleTag()
+	{
+		$xml = new \Prado\Xml\TXmlDocument();
+		$xml->loadFromString('<service id="bayesian"><authorization><permit roles="editor" /></authorization></service>');
+		$service = new TBayesianService();
+		try {
+			$service->init($xml);
+			self::fail('expected exception');
+		} catch (TConfigurationException $e) {
+			self::assertSame('bayesian_service_rule_invalid', $e->getErrorCode());
+			self::assertStringContainsString('permit', $e->getErrorMessage());
+		}
+		$service = new TBayesianService();
+		try {
+			$service->init(['authorization' => [['action' => 'permit', 'roles' => 'editor']]]);
+			self::fail('expected exception');
+		} catch (TConfigurationException $e) {
+			self::assertSame('bayesian_service_rule_invalid', $e->getErrorCode());
+		}
+	}
+
+	/** Puts a user on the shared test application, or removes it when null. */
+	private function setLiveUser(?\Prado\Security\IUser $user): void
+	{
+		$app = BayesianTestApplication::get();
+		if ($user !== null) {
+			$app->setUser($user);
+			return;
+		}
+		$property = new \ReflectionProperty(\Prado\TApplication::class, '_user');
+		$property->setValue($app, null);
+	}
+
+	private function liveUser(string $name, bool $guest, array $roles = []): \Prado\Security\TUser
+	{
+		$user = new \Prado\Security\TUser(new \Prado\Security\TUserManager());
+		$user->setName($name);
+		$user->setIsGuest($guest);
+		$user->setRoles($roles);
+		return $user;
+	}
+
+	/** A service that allows editors and denies everyone else. */
+	private function restrictedService(): TBayesianService
+	{
+		$service = $this->trainedService();
+		$service->getAuthorizationRules()->add(new \Prado\Security\TAuthorizationRule('allow', '', 'editor'));
+		$service->getAuthorizationRules()->add(new \Prado\Security\TAuthorizationRule('deny', '*', ''));
+		return $service;
+	}
+
+	public function testRulesRefuseAGuestWith401()
+	{
+		try {
+			$this->setLiveUser($this->liveUser('Guest', true));
+			[$body, $response] = $this->runLive($this->restrictedService(), ['text' => 'cheap']);
+			self::assertSame(401, $response->getStatusCode());
+			self::assertSame('bayesian_service_unauthorized', $body['error']);
+			self::assertArrayNotHasKey('category', $body);
+		} finally {
+			$this->setLiveUser(null);
+		}
+	}
+
+	public function testRulesRefuseAnAuthenticatedUserWithoutTheRoleWith403()
+	{
+		try {
+			$this->setLiveUser($this->liveUser('carol', false, ['reader']));
+			[$body, $response] = $this->runLive($this->restrictedService(), ['text' => 'cheap']);
+			self::assertSame(403, $response->getStatusCode());
+			self::assertSame('bayesian_service_unauthorized', $body['error']);
+			self::assertStringContainsString('carol', $body['message']);
+		} finally {
+			$this->setLiveUser(null);
+		}
+	}
+
+	public function testRulesAdmitAUserWithTheRole()
+	{
+		try {
+			$this->setLiveUser($this->liveUser('dave', false, ['editor']));
+			[$body, $response] = $this->runLive($this->restrictedService(), ['text' => 'cheap']);
+			self::assertSame(200, $response->getStatusCode());
+			self::assertSame('spam', $body['category']);
+		} finally {
+			$this->setLiveUser(null);
+		}
+	}
+
+	public function testRulesWithoutAnApplicationUserFailClosed()
+	{
+		// Rules were configured but no authentication module put a user on the application:
+		// refusing is the only safe answer, and the message says what is missing.
+		$this->setLiveUser(null);
+		[$body, $response] = $this->runLive($this->restrictedService(), ['text' => 'cheap']);
+		self::assertSame(401, $response->getStatusCode());
+		self::assertSame('bayesian_service_user_required', $body['error']);
+	}
+
+	public function testNoRulesMeansNoUserIsNeeded()
+	{
+		$this->setLiveUser(null);
+		[$body, $response] = $this->runLive($this->trainedService(), ['text' => 'cheap']);
+		self::assertSame(200, $response->getStatusCode());
+		self::assertSame('spam', $body['category']);
+	}
+
+	public function testRulesApplyToRecommendToo()
+	{
+		try {
+			$this->setLiveUser($this->liveUser('Guest', true));
+			$service = $this->restrictedService();
+			$service->getRecommender()->setPositiveCategory('spam');
+			[$body, $response] = $this->runLive($service, ['action' => 'recommend', 'candidates' => ['cheap']]);
+			self::assertSame(401, $response->getStatusCode());
+			self::assertSame('bayesian_service_unauthorized', $body['error']);
+		} finally {
+			$this->setLiveUser(null);
+		}
+	}
+	public function testClassifyReportsWhetherScoresAreCalibrated()
+	{
+		$service = $this->trainedService();
+		$response = $service->runService(['text' => 'cheap click']);
+		self::assertFalse($response['calibrated']);
+		$classifier = $service->getClassifier();
+		self::assertInstanceOf(TNaiveBayesClassifier::class, $classifier);
+		$classifier->setCalibration(new \Belisoful\Prado\Util\Bayesian\Calibration\TTemperatureScaling(2.0));
+		$response = $service->runService(['text' => 'cheap click']);
+		self::assertTrue($response['calibrated']);
+		self::assertEqualsWithDelta(1.0, array_sum($response['scores']), 1e-9);
+	}
+
+	// ---- tagging ------------------------------------------------------------------------------
+
+	private function taggedService(): TBayesianService
+	{
+		$tagger = new \Belisoful\Prado\Util\Bayesian\TBayesianTagger();
+		$tagger->train(['php', 'security'], 'validate every request parameter before the sql query');
+		$tagger->train(['php'], 'composer autoloads the classes');
+		$tagger->train(['cooking'], 'simmer the sauce for twenty minutes');
+		$tagger->train([], 'the meeting moved to tuesday');
+		$service = new TBayesianService();
+		$service->setClassifier($tagger->getClassifier());
+		return $service;
+	}
+
+	public function testTagActionReturnsTagsAboveTheThreshold()
+	{
+		$service = $this->taggedService();
+		self::assertSame(0.5, $service->getTagThreshold());
+		self::assertSame(0, $service->getMaxTags());
+		$response = $service->runService(['action' => 'tag', 'text' => 'escape the sql query parameters']);
+		self::assertSame(['php', 'security'], array_keys($response['tags']));
+		self::assertFalse($response['calibrated']);
+		self::assertInstanceOf(\Belisoful\Prado\Util\Bayesian\TBayesianTagger::class, $service->getTagger());
+		self::assertSame($service->getTagger(), $service->getTagger());
+	}
+
+	public function testTagThresholdAndMaxTagsShapeTheBuiltTagger()
+	{
+		$service = $this->taggedService();
+		$service->setTagThreshold(0.0);
+		$service->setMaxTags(1);
+		self::assertSame(0.0, $service->getTagThreshold());
+		self::assertSame(1, $service->getMaxTags());
+		$response = $service->runService(['action' => 'tag', 'text' => 'escape the sql query parameters']);
+		self::assertSame(['php'], array_keys($response['tags']));
+		self::assertSame(0.0, $service->getTagger()->getThreshold());
+		self::assertSame(1, $service->getTagger()->getMaxTags());
+		$service->setTagThreshold(NAN);
+		self::assertSame(0.5, $service->getTagThreshold());
+		$service->setTagThreshold(7.0);
+		self::assertSame(1.0, $service->getTagThreshold());
+		$service->setMaxTags(-1);
+		self::assertSame(0, $service->getMaxTags());
+	}
+
+	public function testTagActionValidatesText()
+	{
+		$service = $this->taggedService();
+		try {
+			$service->runService(['action' => 'tag']);
+			self::fail('expected exception');
+		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+			self::assertSame('bayesian_service_text_required', $e->getErrorCode());
+		}
+		$service->setMaxTextLength(5);
+		try {
+			$service->runService(['action' => 'tag', 'text' => 'far too long']);
+			self::fail('expected exception');
+		} catch (\Prado\Exceptions\TInvalidDataValueException $e) {
+			self::assertSame('bayesian_service_text_too_long', $e->getErrorCode());
+		}
+	}
+
+	public function testTagActionNeedsATrainedTaggerAndAMultinomialClassifier()
+	{
+		$service = new TBayesianService();
+		$service->setClassifier(new TNaiveBayesClassifier());
+		try {
+			$service->runService(['action' => 'tag', 'text' => 'anything']);
+			self::fail('expected exception');
+		} catch (\Prado\Exceptions\TInvalidOperationException $e) {
+			self::assertSame('bayesian_classifier_not_trained', $e->getErrorCode());
+		}
+		$service = new TBayesianService();
+		$service->setClassifier($this->createStub(\Belisoful\Prado\Util\Bayesian\Classifier\IBayesianClassifier::class));
+		try {
+			$service->getTagger();
+			self::fail('expected exception');
+		} catch (TConfigurationException $e) {
+			self::assertSame('bayesian_tagger_classifier_invalid', $e->getErrorCode());
+		}
+	}
+
+	public function testAnInjectedTaggerIsUsedAsIs()
+	{
+		$tagger = new \Belisoful\Prado\Util\Bayesian\TBayesianTagger();
+		$tagger->train(['a'], 'alpha beta');
+		$tagger->train([], 'gamma delta');
+		$tagger->setThreshold(0.1);
+		$service = new TBayesianService();
+		$service->setTagger($tagger);
+		self::assertSame($tagger, $service->getTagger());
+		$response = $service->runService(['action' => 'tag', 'text' => 'alpha']);
+		self::assertSame(['a'], array_keys($response['tags']));
+	}
+
+	public function testTagPermissionIsChecked()
+	{
+		$service = $this->taggedService();
+		$service->attachBehavior('deny', new DenyingBayesianBehavior());
+		try {
+			$service->runService(['action' => 'tag', 'text' => 'sql']);
+			self::fail('expected exception');
+		} catch (\Prado\Exceptions\THttpException $e) {
+			self::assertSame('bayesian_service_permission_denied', $e->getErrorCode());
+			self::assertStringContainsString(TBayesianService::PERM_TAG, $e->getErrorMessage());
+		}
+	}
+
+	public function testRunWritesTagsAsAJsonObject()
+	{
+		$service = $this->taggedService();
+		[$body, $response] = $this->runLive($service, ['action' => 'tag', 'text' => 'escape the sql query parameters']);
+		self::assertSame(200, $response->getStatusCode());
+		self::assertSame(['php', 'security'], array_keys($body['tags']));
+		self::assertFalse($body['calibrated']);
+		$service->setTagThreshold(1.0);
+		$service = $this->taggedService();
+		$service->setTagThreshold(1.0);
+		$response = $this->prepareLiveRequest(['action' => 'tag', 'text' => 'escape the sql query parameters']);
+		ob_start();
+		try {
+			$service->run();
+		} finally {
+			$json = ob_get_clean();
+		}
+		self::assertStringStartsWith('{"tags":{}', $json, 'no tags is still an object');
 	}
 }

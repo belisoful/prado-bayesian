@@ -10,6 +10,7 @@
 
 namespace Belisoful\Prado\Util\Bayesian\Tokenizer;
 
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\TComponent;
 
@@ -129,7 +130,7 @@ class TBayesianTokenizerChain extends TComponent implements IBayesianTokenizer
 			if (!is_array($state)) {
 				continue;
 			}
-			$restored = TBayesianTokenizerFactory::restore($state, $this->_tokenizers[$index] ?? null);
+			$restored = TBayesianTokenizerFactory::restore(TBayesianPayload::map($state), $this->_tokenizers[$index] ?? null);
 			if ($restored !== null) {
 				$members[] = $restored;
 			}

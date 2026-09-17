@@ -69,6 +69,20 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	/** @var int Bumped whenever the model is re-read, for {@see getStateSignature()}. */
 	private int $_generation = 0;
 
+	/** @var array<string, mixed> The model metadata as last read from storage. */
+	private array $_meta = [];
+
+	/** @var int The most tokens the batch holds before it is started afresh. */
+	private int $_maxBatchTokens = self::DEFAULT_MAX_BATCH_TOKENS;
+
+	/**
+	 * The default cap on the prefetched batch, in tokens.  The batch is cumulative so that one
+	 * document scored against several classifiers costs one read; without a cap a worker that
+	 * scores documents for hours would hold every token it ever read.
+	 * @since 0.2.0
+	 */
+	public const DEFAULT_MAX_BATCH_TOKENS = 50000;
+
 	/**
 	 * Binds a vocabulary to a model in a per-token backend.
 	 * @param IBayesianTokenStorage $storage The backend.
@@ -87,16 +101,16 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	 */
 	public function initialize(array $meta, array $categories): void
 	{
-		$this->_totalDocuments = (int) ($meta['totalDocuments'] ?? 0);
-		$this->_vocabularySize = (int) ($meta['vocabularySize'] ?? 0);
+		$this->_meta = $meta;
+		$this->_totalDocuments = TBayesianPayload::int($meta['totalDocuments'] ?? null);
+		$this->_vocabularySize = TBayesianPayload::int($meta['vocabularySize'] ?? null);
 		$this->_categories = [];
 		$this->_globalTokenTotal = 0;
 		// Restore the training order the model was saved with; anything the metadata does not
 		// name (a category added by a writer that did not update it) follows, so a category can
 		// never be dropped by an out-of-date order list.
 		$ordered = [];
-		foreach (($meta['categoryOrder'] ?? []) as $name) {
-			$name = (string) $name;
+		foreach (TBayesianPayload::stringList($meta['categoryOrder'] ?? null) as $name) {
 			if (isset($categories[$name])) {
 				$ordered[$name] = $categories[$name];
 			}
@@ -106,8 +120,13 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 		}
 		$categories = $ordered;
 		foreach ($categories as $name => $stats) {
-			$documentCount = (int) ($stats['documentCount'] ?? 0);
-			$totalTokens = (int) ($stats['totalTokens'] ?? 0);
+			$documentCount = (int) $stats['documentCount'];
+			$totalTokens = (int) $stats['totalTokens'];
+			if ($documentCount <= 0) {
+				// A category every document has been withdrawn from is not a category, whatever
+				// row the storage keeps for it.
+				continue;
+			}
 			$this->_categories[(string) $name] = new TLazyBayesianCategory((string) $name, $this, $documentCount, $totalTokens);
 			$this->_globalTokenTotal += $totalTokens;
 		}
@@ -117,12 +136,49 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	}
 
 	/**
+	 * Re-reads the model's scalars and categories from storage, replacing this process's copy.
+	 *
+	 * Called after every training write, because the storage is the only party that knows what
+	 * other writers have done in the meantime; the resident numbers are a snapshot, never the
+	 * truth.  Also useful to a long-lived worker that wants to see training done elsewhere
+	 * without reloading the classifier.
+	 * @since 0.2.0
+	 */
+	public function refresh(): void
+	{
+		$this->initialize($this->_storage->loadTokenMeta($this->_model) ?? [], $this->_storage->loadTokenCategories($this->_model));
+	}
+
+	/**
 	 * Returns the model name this vocabulary reads under.
 	 * @return string The model name.
 	 */
 	public function getModelName(): string
 	{
 		return $this->_model;
+	}
+
+	/**
+	 * Returns the most tokens the prefetched batch holds before it is started afresh.
+	 * @return int The cap.
+	 * @since 0.2.0
+	 */
+	public function getMaxBatchTokens(): int
+	{
+		return $this->_maxBatchTokens;
+	}
+
+	/**
+	 * Sets the most tokens the prefetched batch holds.  When a prefetch would push the batch
+	 * past it, the batch is dropped and started from the document being fetched, so a process
+	 * that scores documents indefinitely holds a bounded number of tokens.  A document longer
+	 * than the cap is still fetched whole.  Values below 1 are treated as 1.
+	 * @param int $value The cap, in tokens.
+	 * @since 0.2.0
+	 */
+	public function setMaxBatchTokens(int $value): void
+	{
+		$this->_maxBatchTokens = $value < 1 ? 1 : $value;
 	}
 
 	/**
@@ -143,7 +199,8 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	 *
 	 * Tokens already covered by the current batch are not re-requested, so scoring the same
 	 * document against several classifiers costs one query, not several.  The batch is
-	 * cumulative within a model and is dropped whenever {@see initialize()} re-reads it.
+	 * cumulative within a model, bounded by {@see getMaxBatchTokens MaxBatchTokens}, and is
+	 * dropped whenever {@see initialize()} re-reads the model.
 	 * @param string[] $tokens The tokens about to be read.
 	 */
 	public function prefetch(array $tokens): void
@@ -157,6 +214,15 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 		}
 		if ($wanted === []) {
 			return;
+		}
+		if (count($this->_fetched) + count($wanted) > $this->_maxBatchTokens && $this->_fetched !== []) {
+			// Start over from this document rather than growing without bound.
+			$this->_batch = [];
+			$this->_fetched = [];
+			$wanted = [];
+			foreach ($tokens as $token) {
+				$wanted[(string) $token] = true;
+			}
 		}
 		$rows = $this->_storage->loadTokens($this->_model, array_keys($wanted));
 		foreach ($rows as $token => $categories) {
@@ -226,13 +292,15 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	}
 
 	/**
-	 * Returns whether the token was seen anywhere in the corpus, from the current batch.
+	 * Returns whether some training document contains the token, from the current batch.  A
+	 * token whose rows all read zero — every document containing it was withdrawn — is not in
+	 * the vocabulary, exactly as in the resident implementation.
 	 * @param string $token The token.
 	 * @return bool Whether the token is in the vocabulary.
 	 */
 	public function hasToken(string $token): bool
 	{
-		return isset($this->_batch[$token]);
+		return $this->getTokenDocumentFrequency($token) > 0;
 	}
 
 	/**
@@ -248,7 +316,7 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	{
 		$total = 0;
 		foreach ($this->_batch[$token] ?? [] as $stats) {
-			$total += (int) ($stats['docCount'] ?? 0);
+			$total += $stats['docCount'];
 		}
 		return $total;
 	}
@@ -262,7 +330,7 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	{
 		$total = 0;
 		foreach ($this->_batch[$token] ?? [] as $stats) {
-			$total += (int) ($stats['count'] ?? 0);
+			$total += $stats['count'];
 		}
 		return $total;
 	}
@@ -321,16 +389,21 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	}
 
 	/**
-	 * Records one training document by writing its deltas to storage and advancing the resident
-	 * scalars to match.
+	 * Records one training document by writing its deltas to storage and re-reading the
+	 * resident scalars from it.
 	 *
-	 * Only the document's own tokens are read and written, so the cost is proportional to the
-	 * document rather than to the model — the reason a per-token model can be trained
-	 * incrementally at all, where a whole-payload model has to be re-serialized in full.
+	 * Only the document's own tokens are written, so the cost is proportional to the document
+	 * rather than to the model — the reason a per-token model can be trained incrementally at
+	 * all, where a whole-payload model has to be re-serialized in full.  The storage applies
+	 * the deltas as atomic increments and derives the model's totals itself, so any number of
+	 * processes may train one model at once; afterwards this vocabulary re-reads those totals
+	 * rather than trusting its own arithmetic, since another writer may have moved them too.
 	 * @param string $category The category name.
 	 * @param string[] $tokens The document's tokens, with multiplicity.
-	 * @param array<string, mixed> $meta The model metadata to write alongside the deltas.
-	 * @return array<string, mixed> The metadata actually written, with the advanced scalars.
+	 * @param array<string, mixed> $meta The model metadata to write alongside the deltas; its
+	 * `totalDocuments` and `vocabularySize` are ignored by the storage.
+	 * @return array<string, mixed> The metadata as stored after the write, with the storage's
+	 * own totals.
 	 */
 	public function applyDocument(string $category, array $tokens, array $meta): array
 	{
@@ -339,46 +412,62 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 			$token = (string) $token;
 			$counts[$token] = ($counts[$token] ?? 0) + 1;
 		}
-		// Read the document's tokens first: a token with no row anywhere is new to the corpus
-		// and grows |V|, which nothing else could tell us without counting the whole table.
-		$this->prefetch(array_keys($counts));
-		$newTokens = 0;
 		$deltas = [];
 		foreach ($counts as $token => $count) {
-			$token = (string) $token;
-			if (!isset($this->_batch[$token])) {
-				$newTokens++;
-			}
-			$deltas[$token] = ['count' => $count, 'docCount' => 1];
+			$deltas[(string) $token] = ['count' => $count, 'docCount' => 1];
 		}
-
-		$existing = $this->_categories[$category] ?? null;
-		$documentCount = ($existing?->getDocumentCount() ?? 0) + 1;
-		$totalTokens = ($existing?->getTotalTokens() ?? 0) + array_sum($counts);
-
-		$this->_totalDocuments++;
-		$this->_vocabularySize += $newTokens;
-		$meta['totalDocuments'] = $this->_totalDocuments;
-		$meta['vocabularySize'] = $this->_vocabularySize;
-
 		$this->_storage->applyDeltas($this->_model, $category, $deltas, $meta, [
-			'documentCount' => $documentCount,
-			'totalTokens' => $totalTokens,
+			'documentCount' => 1,
+			'totalTokens' => array_sum($counts),
 		]);
-
-		// Re-read the affected tokens so the batch reflects the write, and refresh the
-		// category scalars from the values just persisted.
-		foreach (array_keys($deltas) as $token) {
-			unset($this->_fetched[(string) $token]);
-		}
+		$this->refresh();
 		$this->prefetch(array_keys($deltas));
-		$this->_categories[$category] = new TLazyBayesianCategory($category, $this, $documentCount, $totalTokens);
-		$this->_globalTokenTotal = 0;
-		foreach ($this->_categories as $resident) {
-			$this->_globalTokenTotal += $resident->getTotalTokens();
+		return $this->_meta;
+	}
+
+	/**
+	 * Not available: a storage-backed vocabulary is untrained through
+	 * {@see withdrawDocument()}, which writes the deltas out rather than applying them here.
+	 * @param string $category The category name.
+	 * @param string[] $tokens The document's tokens.
+	 * @throws TInvalidOperationException Always.
+	 * @since 0.2.0
+	 */
+	public function removeDocument(string $category, array $tokens): void
+	{
+		throw new TInvalidOperationException('bayesian_vocabulary_readonly', $this->_model);
+	}
+
+	/**
+	 * Withdraws one training document by writing its negative deltas to storage and re-reading
+	 * the resident scalars: the inverse of {@see applyDocument()}.  The storage clamps every
+	 * count at zero and drops a token from the vocabulary when no document contains it any
+	 * more, so the model ends as it would have without the document.
+	 * @param string $category The category name.
+	 * @param string[] $tokens The document's tokens, with multiplicity.
+	 * @param array<string, mixed> $meta The model metadata to write alongside the deltas; its
+	 * `totalDocuments` and `vocabularySize` are ignored by the storage.
+	 * @return array<string, mixed> The metadata as stored after the write.
+	 * @since 0.2.0
+	 */
+	public function withdrawDocument(string $category, array $tokens, array $meta): array
+	{
+		$counts = [];
+		foreach ($tokens as $token) {
+			$token = (string) $token;
+			$counts[$token] = ($counts[$token] ?? 0) + 1;
 		}
-		$this->_generation++;
-		return $meta;
+		$deltas = [];
+		foreach ($counts as $token => $count) {
+			$deltas[(string) $token] = ['count' => -$count, 'docCount' => -1];
+		}
+		$this->_storage->applyDeltas($this->_model, $category, $deltas, $meta, [
+			'documentCount' => -1,
+			'totalTokens' => -array_sum($counts),
+		]);
+		$this->refresh();
+		$this->prefetch(array_keys($deltas));
+		return $this->_meta;
 	}
 
 	/**

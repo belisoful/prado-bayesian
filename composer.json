@@ -60,9 +60,20 @@
 		}
 	},
 	"scripts": {
+		"lint": "find src tests -name '*.php' -print0 | xargs -0 -n1 php -l > /dev/null",
+		"fix": "vendor/bin/php-cs-fixer fix --using-cache=no",
+		"cs": "vendor/bin/php-cs-fixer fix --dry-run --using-cache=no --diff",
+		"stan": "vendor/bin/phpstan analyse --memory-limit=512M",
 		"unittest": "vendor/bin/phpunit --testsuite unit",
 		"coverage": "vendor/bin/phpunit --testsuite unit --coverage-text --coverage-clover=build/logs/clover.xml",
-		"integration": "tests/integration/run-install-test.sh"
+		"integration": "tests/integration/run-install-test.sh",
+		"benchmark": "php tests/benchmark/benchmark-storage.php",
+		"fulltest": [
+			"@lint",
+			"@cs",
+			"@stan",
+			"@unittest"
+		]
 	},
 	"extra": {
 		"prado": {
@@ -70,5 +81,16 @@
 			"error-messages": "config/errorMessages.txt",
 			"class-map": "config/prado-bayesian-classes.json"
 		}
+	},
+	"scripts-descriptions": {
+		"lint": "Compile-check every PHP file under src/ and tests/ with php -l.",
+		"fix": "Apply php-cs-fixer to the source tree.",
+		"cs": "Check code style without changing files (what CI runs).",
+		"stan": "Run PHPStan at the level in phpstan.neon.dist.",
+		"unittest": "Run the unit test suite.",
+		"coverage": "Run the unit tests with a text and Clover coverage report.",
+		"integration": "Install the package into a throwaway consumer project and verify the extra.prado wiring.",
+		"benchmark": "Measure payload size, memory and load time per storage mode (see docs/storage.md).",
+		"fulltest": "The full check: lint, code style, static analysis, unit tests, in that order."
 	}
 }

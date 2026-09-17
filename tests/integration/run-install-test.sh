@@ -51,10 +51,10 @@ cat > "$WORK_DIR/composer.json" <<JSON
     "repositories": [
         { "type": "composer", "url": "https://asset-packagist.org" },
         { "type": "path", "url": "$PRADO_DIR", "options": { "versions": { "pradosoft/prado": "4.4.x-dev" } } },
-        { "type": "path", "url": "$EXTENSION_DIR", "options": { "versions": { "belisoful/prado-bayesian": "0.1.0" } } }
+        { "type": "path", "url": "$EXTENSION_DIR", "options": { "versions": { "belisoful/prado-bayesian": "0.2.0" } } }
     ],
     "require": {
-        "belisoful/prado-bayesian": "0.1.0"
+        "belisoful/prado-bayesian": "0.2.0"
     },
     "minimum-stability": "dev",
     "prefer-stable": true

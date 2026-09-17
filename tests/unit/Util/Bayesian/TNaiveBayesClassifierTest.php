@@ -662,4 +662,260 @@ class TNaiveBayesClassifierTest extends PHPUnit\Framework\TestCase
 		self::assertEqualsWithDelta(1.0, $scores['spam'], 1e-12);
 		self::assertSame('spam', $classifier->classify('free'));
 	}
+	public function testSavedPayloadCarriesTheFormatVersion()
+	{
+		$storage = new TMemoryBayesianStorage();
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->setStorage($storage);
+		$classifier->setName('m');
+		$classifier->trainOne('spam', 'cheap pills');
+		$classifier->save();
+		self::assertSame(TNaiveBayesClassifier::FORMAT_VERSION, $storage->load('m')['formatVersion']);
+	}
+
+	public function testAPayloadWithoutAFormatVersionLoadsAsTheFirstFormat()
+	{
+		// Every 0.1.0 payload lacks the key; it must keep loading.
+		$storage = new TMemoryBayesianStorage();
+		$storage->save('legacy', [
+			'kind' => 'naive-bayes',
+			'categories' => [['name' => 'spam', 'documentCount' => 1, 'tokenCounts' => ['cheap' => 1], 'tokenDocumentCounts' => ['cheap' => 1], 'totalTokens' => 1]],
+			'documentFrequency' => ['cheap' => 1],
+			'totalDocuments' => 1,
+		]);
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->setStorage($storage);
+		$classifier->load('legacy');
+		self::assertSame('spam', $classifier->classify('cheap'));
+	}
+
+	public function testAPayloadFromANewerFormatIsRefused()
+	{
+		$storage = new TMemoryBayesianStorage();
+		$storage->save('future', ['kind' => 'naive-bayes', 'formatVersion' => TNaiveBayesClassifier::FORMAT_VERSION + 1, 'categories' => []]);
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->setStorage($storage);
+		try {
+			$classifier->load('future');
+			self::fail('expected a newer payload format to be refused');
+		} catch (TInvalidDataValueException $e) {
+			self::assertSame('bayesian_model_format_unsupported', $e->getErrorCode());
+			self::assertStringContainsString('future', $e->getErrorMessage());
+		}
+		self::assertFalse($classifier->getIsTrained(), 'nothing was imported');
+	}
+	/** @return array<int, array{0:string, 1:string}> */
+	private function corpusForUntrain(): array
+	{
+		return [
+			['spam', 'cheap pills buy now'],
+			['ham', 'team meeting agenda'],
+			['spam', 'cheap watches lowest prices'],
+			['ham', 'quarterly report attached'],
+		];
+	}
+
+	public function testUntrainOneWithdrawsADocumentExactly()
+	{
+		// A model that trained a document and then untrained it must be indistinguishable from
+		// one that never saw it: same counts, same vocabulary, same scores.
+		$reference = new TNaiveBayesClassifier();
+		$full = new TNaiveBayesClassifier();
+		foreach ($this->corpusForUntrain() as $i => [$category, $document]) {
+			$full->trainOne($category, $document);
+			if ($i !== 2) {
+				$reference->trainOne($category, $document);
+			}
+		}
+		$full->untrainOne('spam', 'cheap watches lowest prices');
+		self::assertSame($reference->getVocabulary()->getTotalDocuments(), $full->getVocabulary()->getTotalDocuments());
+		self::assertSame($reference->getVocabulary()->getVocabularySize(), $full->getVocabulary()->getVocabularySize());
+		self::assertSame($reference->getVocabulary()->getDocumentFrequency(), $full->getVocabulary()->getDocumentFrequency());
+		self::assertFalse($full->getVocabulary()->hasToken('watches'));
+		foreach (['cheap prices', 'team report', 'watches', 'nothing known'] as $probe) {
+			self::assertSame($reference->score($probe), $full->score($probe), $probe);
+		}
+	}
+
+	public function testUntrainAcceptsATrainingSetAndPreTokenizedDocuments()
+	{
+		$classifier = new TNaiveBayesClassifier();
+		$set = new TBayesianTrainingSet();
+		$set->add('spam', ['cheap', 'pills']);
+		$set->add('ham', 'team meeting');
+		$classifier->train($set);
+		$classifier->trainOne('spam', 'cheap watches');
+		$classifier->untrain($set);
+		self::assertSame(['spam'], $classifier->getVocabulary()->getCategoryNames(), 'ham had only the withdrawn document');
+		self::assertSame(1, $classifier->getVocabulary()->getTotalDocuments());
+		self::assertSame(['cheap' => 1, 'watches' => 1], $classifier->getVocabulary()->getDocumentFrequency());
+		$this->expectException(TInvalidDataValueException::class);
+		$classifier->untrain(new TBayesianTrainingSet());
+	}
+
+	public function testUntrainingEverythingLeavesAnUntrainedClassifier()
+	{
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->trainOne('spam', 'cheap pills');
+		self::assertTrue($classifier->getIsTrained());
+		$classifier->untrainOne('spam', 'cheap pills');
+		self::assertFalse($classifier->getIsTrained());
+		self::assertSame([], $classifier->score('cheap'));
+		$this->expectException(TInvalidOperationException::class);
+		$classifier->classify('cheap');
+	}
+
+	public function testUntrainClampsAndIgnoresWhatWasNeverTrained()
+	{
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->trainOne('spam', 'cheap pills');
+		$classifier->trainOne('ham', 'team meeting');
+		$before = $classifier->score('cheap team');
+		// A category the model never had: nothing changes.
+		$classifier->untrainOne('news', 'cheap pills');
+		self::assertSame(['spam', 'ham'], $classifier->getVocabulary()->getCategoryNames());
+		self::assertSame($before, $classifier->score('cheap team'));
+		// Tokens the category never saw are ignored; the document itself is still withdrawn.
+		$classifier->trainOne('spam', 'lottery');
+		$classifier->untrainOne('spam', 'unseen words');
+		self::assertSame(1, $classifier->getVocabulary()->getCategory('spam')->getDocumentCount());
+		self::assertSame(1, $classifier->getVocabulary()->getCategory('spam')->getTokenCount('cheap'));
+		self::assertSame(1, $classifier->getVocabulary()->getCategory('spam')->getTokenCount('lottery'));
+		self::assertFalse($classifier->getVocabulary()->hasToken('unseen'));
+	}
+
+	public function testUntrainOneRejectsAnEmptyCategory()
+	{
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->trainOne('spam', 'cheap');
+		$this->expectException(TInvalidDataValueException::class);
+		$classifier->untrainOne('', 'cheap');
+	}
+
+	public function testUntrainSurvivesASaveAndLoadRoundTrip()
+	{
+		$storage = new TMemoryBayesianStorage();
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->setStorage($storage);
+		$classifier->setName('m');
+		foreach ($this->corpusForUntrain() as [$category, $document]) {
+			$classifier->trainOne($category, $document);
+		}
+		$classifier->untrainOne('ham', 'quarterly report attached');
+		$classifier->save();
+		$loaded = new TNaiveBayesClassifier();
+		$loaded->setStorage($storage);
+		$loaded->load('m');
+		self::assertSame(3, $loaded->getVocabulary()->getTotalDocuments());
+		self::assertFalse($loaded->getVocabulary()->hasToken('quarterly'));
+		self::assertSame($classifier->score('cheap report'), $loaded->score('cheap report'));
+	}
+	/** A classifier trained on a small corpus, and a held-out set it never saw. */
+	private function trainedWithHeldOut(): array
+	{
+		$classifier = new TNaiveBayesClassifier();
+		foreach ([
+			['spam', 'cheap pills buy now'], ['spam', 'lowest prices order today'], ['spam', 'free money click here'],
+			['ham', 'team meeting agenda tomorrow'], ['ham', 'please review the report'], ['ham', 'deployment finished healthy'],
+		] as [$category, $document]) {
+			$classifier->trainOne($category, $document);
+		}
+		$heldOut = new TBayesianTrainingSet();
+		foreach ([
+			['spam', 'cheap prices now'], ['spam', 'free pills today'], ['ham', 'review the agenda'], ['ham', 'meeting tomorrow'],
+			['ham', 'cheap deployment report'], ['spam', 'order the report now'],
+		] as [$category, $document]) {
+			$heldOut->add($category, $document);
+		}
+		return [$classifier, $heldOut];
+	}
+
+	public function testScoresAreUncalibratedUntilCalibrated()
+	{
+		[$classifier, $heldOut] = $this->trainedWithHeldOut();
+		self::assertFalse($classifier->getIsCalibrated());
+		self::assertNull($classifier->getCalibration());
+		$raw = $classifier->score('cheap prices now');
+		$logScores = $classifier->logScores('cheap prices now');
+		self::assertSame(array_keys($raw), array_keys($logScores));
+		self::assertSame(\Belisoful\Prado\Util\Bayesian\Math\TBayesMath::normalize($logScores), $raw, 'score() is the normalized log-scores');
+
+		$calibration = $classifier->calibrate($heldOut);
+		self::assertTrue($classifier->getIsCalibrated());
+		self::assertSame($calibration, $classifier->getCalibration());
+		self::assertSame(6, $calibration->getSampleCount());
+		self::assertNotSame(1.0, $calibration->getTemperature());
+		$calibrated = $classifier->score('cheap prices now');
+		self::assertSame($calibration->apply($logScores), $calibrated, 'score() applies the calibration');
+		self::assertSame($logScores, $classifier->logScores('cheap prices now'), 'logScores() stays raw');
+		self::assertSame('spam', $classifier->classify('cheap prices now'), 'the ranking is unchanged');
+		self::assertEqualsWithDelta(1.0, array_sum($calibrated), 1e-12);
+
+		$classifier->setCalibration(null);
+		self::assertFalse($classifier->getIsCalibrated());
+		self::assertSame($raw, $classifier->score('cheap prices now'));
+	}
+
+	public function testCalibrateRequiresATrainedClassifierAndUsableDocuments()
+	{
+		$classifier = new TNaiveBayesClassifier();
+		$heldOut = new TBayesianTrainingSet();
+		$heldOut->add('spam', 'cheap');
+		try {
+			$classifier->calibrate($heldOut);
+			self::fail('expected exception');
+		} catch (TInvalidOperationException $e) {
+			self::assertSame('bayesian_classifier_not_trained', $e->getErrorCode());
+		}
+		$classifier->trainOne('spam', 'cheap pills');
+		$classifier->trainOne('ham', 'team meeting');
+		try {
+			$classifier->calibrate(new TBayesianTrainingSet());
+			self::fail('expected exception');
+		} catch (TInvalidDataValueException $e) {
+			self::assertSame('bayesian_calibration_set_empty', $e->getErrorCode());
+		}
+		$unknown = new TBayesianTrainingSet();
+		$unknown->add('news', 'cheap pills');
+		try {
+			$classifier->calibrate($unknown);
+			self::fail('expected exception');
+		} catch (TInvalidDataValueException $e) {
+			self::assertSame('bayesian_calibration_set_empty', $e->getErrorCode(), 'a label the model does not have cannot be calibrated for');
+		}
+		self::assertFalse($classifier->getIsCalibrated());
+	}
+
+	public function testCalibrationAndExtraStateSurviveSaveAndLoad()
+	{
+		[$classifier, $heldOut] = $this->trainedWithHeldOut();
+		$classifier->calibrate($heldOut);
+		$classifier->setExtraState('tagger', ['threshold' => 0.4, 'labels' => ['a', 'b']]);
+		self::assertSame(['threshold' => 0.4, 'labels' => ['a', 'b']], $classifier->getExtraState('tagger'));
+		self::assertNull($classifier->getExtraState('other'));
+		$storage = new TMemoryBayesianStorage();
+		$classifier->setStorage($storage);
+		$classifier->setName('m');
+		$classifier->save();
+		self::assertSame('temperature', $storage->load('m')['calibration']['method']);
+
+		$loaded = new TNaiveBayesClassifier();
+		$loaded->setStorage($storage);
+		$loaded->load('m');
+		self::assertTrue($loaded->getIsCalibrated());
+		self::assertSame($classifier->getCalibration()->getTemperature(), $loaded->getCalibration()->getTemperature());
+		self::assertSame($classifier->score('cheap prices now'), $loaded->score('cheap prices now'));
+		self::assertSame(['threshold' => 0.4, 'labels' => ['a', 'b']], $loaded->getExtraState('tagger'));
+
+		$classifier->setExtraState('tagger', null);
+		self::assertNull($classifier->getExtraState('tagger'));
+		$classifier->save();
+		$loaded->load('m');
+		self::assertNull($loaded->getExtraState('tagger'));
+		// A 0.1.0 payload has neither key.
+		$storage->save('legacy', ['kind' => 'naive-bayes', 'categories' => [['name' => 'spam', 'documentCount' => 1, 'tokenCounts' => ['cheap' => 1], 'tokenDocumentCounts' => ['cheap' => 1], 'totalTokens' => 1]], 'documentFrequency' => ['cheap' => 1], 'totalDocuments' => 1]);
+		$loaded->load('legacy');
+		self::assertFalse($loaded->getIsCalibrated());
+		self::assertNull($loaded->getExtraState('tagger'));
+	}
 }

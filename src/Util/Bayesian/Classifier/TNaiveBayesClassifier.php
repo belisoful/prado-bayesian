@@ -10,12 +10,14 @@
 
 namespace Belisoful\Prado\Util\Bayesian\Classifier;
 
+use Belisoful\Prado\Util\Bayesian\Calibration\TTemperatureScaling;
 use Belisoful\Prado\Util\Bayesian\IBayesianVocabulary;
 use Belisoful\Prado\Util\Bayesian\Math\TBayesMath;
 use Belisoful\Prado\Util\Bayesian\Math\TFIdf;
 use Belisoful\Prado\Util\Bayesian\Storage\IBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\IBayesianTokenStorage;
 use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
+use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
 use Belisoful\Prado\Util\Bayesian\TBayesianVocabulary;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
@@ -38,7 +40,12 @@ use Prado\TComponent;
  *
  * Computations happen in log space ({@see TBayesMath}) to avoid the underflow that bites
  * straight multiplication of thousands of small probabilities, then the relative log-scores
- * are normalized back to a probability distribution.
+ * are normalized back to a distribution that sums to one.  Those are *not* calibrated
+ * probabilities — Naive Bayes is overconfident by construction — until a
+ * {@see TTemperatureScaling} is fitted on held-out documents with {@see calibrate()} and
+ * installed as the {@see setCalibration() Calibration}; {@see score()} then applies it, and
+ * the fitted temperature is saved with the model.  {@see logScores()} always returns the raw
+ * log-posteriors.
  *
  * The feature vocabulary is fixed by training: a token never seen in any category is
  * out-of-vocabulary and is skipped at classification time (the convention of scikit-learn
@@ -62,7 +69,16 @@ use Prado\TComponent;
  */
 class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 {
-	/** @var string The model identifier (used as the storage key when persisted). */
+	/**
+	 * The version of the saved-state shape this class writes, stored as `formatVersion` in
+	 * every payload and per-token metadata.  A payload without it was written by 0.1.0 and is
+	 * read as version 1; a payload from a later version than this is refused with
+	 * `bayesian_model_format_unsupported`, so a newer shape is never silently misread.
+	 * @since 0.2.0
+	 */
+	public const FORMAT_VERSION = 1;
+
+	/** @var ?string The model identifier (used as the storage key when persisted). */
 	private ?string $_name = null;
 
 	/** @var IBayesianTokenizer The tokenizer that turns text into features. */
@@ -82,6 +98,15 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 
 	/** @var string The label treated as "spam" by {@see isSpam()}. */
 	private string $_spamCategory = 'spam';
+
+	/** @var ?TTemperatureScaling The calibration {@see score()} applies, when one is installed. */
+	private ?TTemperatureScaling $_calibration = null;
+
+	/**
+	 * @var array<string, array<string, mixed>> State other components keep with the model
+	 * (a tagger's per-label calibrations, say), saved and loaded with it, keyed by owner.
+	 */
+	private array $_extra = [];
 
 	/**
 	 * Initializes the classifier with a default {@see TWordTokenizer}.
@@ -133,8 +158,52 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	}
 
 	/**
-	 * Hook called whenever the training statistics change (after {@see trainOne()} and
-	 * {@see importState()}), so subclasses can drop derived caches.
+	 * Withdraws every document of a training set, reversing {@see train()}.
+	 * @param TBayesianTrainingSet $set The training set.
+	 * @throws TInvalidDataValueException When the training set is empty.
+	 * @since 0.2.0
+	 */
+	public function untrain(TBayesianTrainingSet $set): void
+	{
+		if ($set->getIsEmpty()) {
+			throw new TInvalidDataValueException('bayesian_training_set_empty');
+		}
+		foreach ($set->each() as $category => $document) {
+			$this->untrainOne($category, $document);
+		}
+	}
+
+	/**
+	 * Withdraws one document from a category, reversing {@see trainOne()} for the same text
+	 * (or the same pre-tokenized list).  Every count stops at zero, a token no document
+	 * contains any more leaves the vocabulary, and a category left without documents is
+	 * removed, so the model ends as it would have without the document.  Withdrawing a document
+	 * that was never trained, or from a category that does not exist, changes nothing beyond
+	 * the clamped counts.
+	 * @param string $category The category name.
+	 * @param string|string[] $document The document.
+	 * @throws TInvalidDataValueException When the category name is empty.
+	 * @since 0.2.0
+	 */
+	public function untrainOne(string $category, $document): void
+	{
+		if ($category === '') {
+			throw new TInvalidDataValueException('bayesian_category_required');
+		}
+		$tokens = is_array($document) ? array_values($document) : $this->_tokenizer->tokenize($document);
+		$vocabulary = $this->_vocabulary;
+		if ($vocabulary instanceof TLazyBayesianVocabulary) {
+			$vocabulary->withdrawDocument($category, $tokens, $this->exportTokenMeta());
+			$this->onTrainingChanged();
+			return;
+		}
+		$vocabulary->removeDocument($category, $tokens);
+		$this->onTrainingChanged();
+	}
+
+	/**
+	 * Hook called whenever the training statistics change (after {@see trainOne()},
+	 * {@see untrainOne()} and {@see importState()}), so subclasses can drop derived caches.
 	 */
 	protected function onTrainingChanged(): void
 	{
@@ -169,15 +238,125 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	}
 
 	/**
-	 * Returns the normalized posterior probability of every category for a document.
+	 * Returns the normalized score of every category for a document.
+	 *
+	 * Without a {@see getCalibration() Calibration} the log-posteriors are normalized as they
+	 * are, which is a ranking that sums to one rather than a probability; with one they are
+	 * scaled by the fitted temperature first, so the value is a probability estimate.
 	 * @param string|string[] $document The document.
-	 * @return array<string, float> The normalized probabilities, keyed by category, summing to
-	 * 1.0; empty when the classifier is untrained or no category has a finite score.
+	 * @return array<string, float> The scores, keyed by category, summing to 1.0; empty when
+	 * the classifier is untrained or no category has a finite score.
 	 */
 	public function score($document): array
 	{
+		$logScores = $this->logScores($document);
+		return $this->_calibration !== null ? $this->_calibration->apply($logScores) : TBayesMath::normalize($logScores);
+	}
+
+	/**
+	 * Returns the raw log-posterior of every category for a document, before any
+	 * normalization or calibration: what {@see calibrate()} fits on and what a custom
+	 * calibration would consume.
+	 * @param string|string[] $document The document.
+	 * @return array<string, float> The log-posteriors, keyed by category; `-INF` for a category
+	 * that cannot score the document; empty when the classifier is untrained.
+	 * @since 0.2.0
+	 */
+	public function logScores($document): array
+	{
 		$tokens = is_array($document) ? array_values($document) : $this->_tokenizer->tokenize($document);
-		return TBayesMath::normalize($this->scoreTokens($tokens));
+		return $this->scoreTokens($tokens);
+	}
+
+	/**
+	 * Fits a {@see TTemperatureScaling} on held-out labeled documents and installs it, so
+	 * {@see score()} returns calibrated probabilities from then on.  The held-out documents
+	 * must not be ones the model was trained on: a model is far more confident about its
+	 * training data than about anything else.  The fitted calibration is saved with the model.
+	 * Refit after substantial further training.
+	 * @param TBayesianTrainingSet $heldOut Labeled documents the model was not trained on.
+	 * @throws TInvalidOperationException When the classifier has not been trained.
+	 * @throws TInvalidDataValueException When the set is empty, or no document of it can be
+	 * scored for its label.
+	 * @return TTemperatureScaling The installed calibration.
+	 * @since 0.2.0
+	 */
+	public function calibrate(TBayesianTrainingSet $heldOut): TTemperatureScaling
+	{
+		if (!$this->getIsTrained()) {
+			throw new TInvalidOperationException('bayesian_classifier_not_trained', $this->_name ?? '');
+		}
+		if ($heldOut->getIsEmpty()) {
+			throw new TInvalidDataValueException('bayesian_calibration_set_empty');
+		}
+		$logScores = [];
+		$labels = [];
+		foreach ($heldOut->each() as $category => $document) {
+			$logScores[] = $this->logScores($document);
+			$labels[] = (string) $category;
+		}
+		$calibration = new TTemperatureScaling();
+		$calibration->fit($logScores, $labels);
+		$this->_calibration = $calibration;
+		return $calibration;
+	}
+
+	/**
+	 * Returns the calibration {@see score()} applies, or null when scores are uncalibrated.
+	 * @return ?TTemperatureScaling The calibration, or null.
+	 * @since 0.2.0
+	 */
+	public function getCalibration(): ?TTemperatureScaling
+	{
+		return $this->_calibration;
+	}
+
+	/**
+	 * Installs a calibration (fitted elsewhere, or with a hand-set temperature), or removes it
+	 * with null so {@see score()} returns the plain normalized scores again.
+	 * @param ?TTemperatureScaling $value The calibration, or null.
+	 * @since 0.2.0
+	 */
+	public function setCalibration(?TTemperatureScaling $value): void
+	{
+		$this->_calibration = $value;
+	}
+
+	/**
+	 * Returns whether {@see score()} returns calibrated probabilities.
+	 * @return bool Whether a calibration is installed.
+	 * @since 0.2.0
+	 */
+	public function getIsCalibrated(): bool
+	{
+		return $this->_calibration !== null;
+	}
+
+	/**
+	 * Returns state another component keeps with this model, saved and loaded alongside it.
+	 * @param string $owner The owner key, e.g. `tagger`.
+	 * @return ?array<string, mixed> The state, or null when the owner has none.
+	 * @since 0.2.0
+	 */
+	public function getExtraState(string $owner): ?array
+	{
+		return $this->_extra[$owner] ?? null;
+	}
+
+	/**
+	 * Stores state another component keeps with this model, or removes it with null.  The
+	 * state must be JSON-serializable; it travels in the saved payload and per-token metadata.
+	 * @param string $owner The owner key.
+	 * @param ?array<string, mixed> $state The state, or null to remove it.
+	 * @since 0.2.0
+	 */
+	public function setExtraState(string $owner, ?array $state): void
+	{
+		if ($state === null) {
+			unset($this->_extra[$owner]);
+			return;
+		}
+		$this->_extra[$owner] = $state;
 	}
 
 	/**
@@ -331,10 +510,15 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	 * The vocabulary must be resident for this — the statistics are being written out, which
 	 * means reading all of them.  A classifier that loaded a model lazily has no whole model to
 	 * write back; train against a resident vocabulary and save from there.
+	 * @throws TConfigurationException When the classifier has no name.
 	 * @throws TInvalidOperationException When the vocabulary cannot be enumerated.
 	 */
 	protected function saveTokenModel(): void
 	{
+		$modelName = $this->_name;
+		if ($modelName === null || $modelName === '') {
+			throw new TConfigurationException('bayesian_classifier_name_required');
+		}
 		$storage = $this->tokenStorage();
 		if ($storage === null) {
 			throw new TInvalidOperationException('bayesian_storage_token_mode_required');
@@ -358,7 +542,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 				];
 			}
 		}
-		$storage->saveTokenModel($this->_name, $this->exportTokenMeta(), $categories, $tokens);
+		$storage->saveTokenModel($modelName, $this->exportTokenMeta(), $categories, $tokens);
 	}
 
 	/**
@@ -372,6 +556,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 		// token maps, which is exactly what a storage-backed vocabulary cannot produce — and
 		// this method has to work while training one incrementally.
 		return [
+			'formatVersion' => self::FORMAT_VERSION,
 			'kind' => $this->getKind(),
 			'name' => $this->_name,
 			'alpha' => $this->_alpha,
@@ -386,6 +571,8 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 			'categoryOrder' => array_map('strval', $this->_vocabulary->getCategoryNames()),
 			'tokenMode' => true,
 			'aggregates' => $this->exportAggregates(),
+			'calibration' => $this->_calibration?->export(),
+			'extra' => $this->_extra,
 		];
 	}
 
@@ -407,7 +594,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 		if ($payload === null) {
 			throw new TConfigurationException('bayesian_classifier_model_missing', $name);
 		}
-		$this->importState($payload);
+		$this->importState($payload, $name);
 		$this->_name = $name;
 	}
 
@@ -419,7 +606,8 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	 * per-token statistics stay in storage and arrive one batched query per classification.
 	 * @param string $name The model name.
 	 * @throws TConfigurationException When the model is unknown.
-	 * @throws TInvalidDataValueException When the payload belongs to another classifier variant.
+	 * @throws TInvalidDataValueException When the payload belongs to another classifier variant
+	 * or a newer saved-state format.
 	 * @throws TInvalidOperationException When the storage is not configured for per-token lookup.
 	 */
 	protected function loadTokenModel(string $name): void
@@ -432,6 +620,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 		if ($meta === null) {
 			throw new TConfigurationException('bayesian_classifier_model_missing', $name);
 		}
+		$this->assertFormatVersion($meta, $name);
 		$kind = $meta['kind'] ?? null;
 		if (is_string($kind) && $kind !== '' && !in_array($kind, $this->getCompatibleKinds(), true)) {
 			throw new TInvalidDataValueException('bayesian_classifier_kind_mismatch', $kind, $this->getKind());
@@ -440,16 +629,17 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 		$vocabulary->initialize($meta, $storage->loadTokenCategories($name));
 		$this->_vocabulary = $vocabulary;
 
-		$alpha = (float) ($meta['alpha'] ?? 1.0);
+		$alpha = TBayesianPayload::float($meta['alpha'] ?? null, 1.0);
 		$this->_alpha = $alpha > 0.0 ? $alpha : 1.0;
-		$this->_useTfidf = (bool) ($meta['useTfidf'] ?? true);
-		$this->_spamCategory = (string) ($meta['spamCategory'] ?? 'spam');
+		$this->_useTfidf = TBayesianPayload::bool($meta['useTfidf'] ?? null, true);
+		$this->_spamCategory = TBayesianPayload::string($meta['spamCategory'] ?? null, 'spam');
 		$tokenizer = $meta['tokenizer'] ?? null;
 		if (is_array($tokenizer)) {
-			$this->importTokenizer($tokenizer);
+			$this->importTokenizer(TBayesianPayload::map($tokenizer));
 		}
 		$this->onTrainingChanged();
-		$this->importAggregates(is_array($meta['aggregates'] ?? null) ? $meta['aggregates'] : []);
+		$this->importAggregates(TBayesianPayload::map($meta['aggregates'] ?? null));
+		$this->importCalibrationAndExtra($meta);
 		$this->_name = $name;
 	}
 
@@ -498,6 +688,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 			];
 		}
 		return [
+			'formatVersion' => self::FORMAT_VERSION,
 			'kind' => $this->getKind(),
 			'name' => $this->_name,
 			'alpha' => $this->_alpha,
@@ -507,6 +698,8 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 			'categories' => $categories,
 			'documentFrequency' => $this->_vocabulary->getDocumentFrequency(),
 			'totalDocuments' => $this->_vocabulary->getTotalDocuments(),
+			'calibration' => $this->_calibration?->export(),
+			'extra' => $this->_extra,
 		];
 	}
 
@@ -530,13 +723,31 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	}
 
 	/**
+	 * Refuses a payload written in a saved-state format newer than this class reads.
+	 * @param array<string, mixed> $payload The payload or per-token metadata.
+	 * @param string $name The model name, for the message.
+	 * @throws TInvalidDataValueException When the payload's `formatVersion` exceeds {@see FORMAT_VERSION}.
+	 */
+	protected function assertFormatVersion(array $payload, string $name): void
+	{
+		$version = TBayesianPayload::int($payload['formatVersion'] ?? null, 1);
+		if ($version > self::FORMAT_VERSION) {
+			throw new TInvalidDataValueException('bayesian_model_format_unsupported', $name, (string) $version, (string) self::FORMAT_VERSION);
+		}
+	}
+
+	/**
 	 * Restores a state payload produced by {@see exportState()}.
 	 * @param array<string, mixed> $payload The payload.
-	 * @throws TInvalidDataValueException When the payload's kind marker belongs to a different
-	 * classifier variant, or its tokenizer state names a class that is not a tokenizer.
+	 * @param ?string $name The model name being loaded, for error messages; the payload's own
+	 * name when null.
+	 * @throws TInvalidDataValueException When the payload's format is newer than this class
+	 * reads, its kind marker belongs to a different classifier variant, or its tokenizer state
+	 * names a class that is not a tokenizer.
 	 */
-	protected function importState(array $payload): void
+	protected function importState(array $payload, ?string $name = null): void
 	{
+		$this->assertFormatVersion($payload, $name ?? TBayesianPayload::string($payload['name'] ?? null, $this->_name ?? ''));
 		$kind = $payload['kind'] ?? null;
 		if (is_string($kind) && $kind !== '' && !in_array($kind, $this->getCompatibleKinds(), true)) {
 			throw new TInvalidDataValueException('bayesian_classifier_kind_mismatch', $kind, $this->getKind());
@@ -546,33 +757,52 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 			// path arrives as a payload with no categories and no token maps.  That would
 			// import cleanly as an untrained classifier and classify everything as whatever the
 			// empty model says, which is the worst possible failure: silent.
-			throw new TInvalidDataValueException('bayesian_classifier_token_mode_payload', (string) ($payload['name'] ?? ''));
+			throw new TInvalidDataValueException('bayesian_classifier_token_mode_payload', TBayesianPayload::string($payload['name'] ?? null));
 		}
 		$categories = [];
-		foreach (($payload['categories'] ?? []) as $row) {
-			$cat = new TBayesianCategory((string) ($row['name'] ?? ''));
+		foreach (TBayesianPayload::list($payload['categories'] ?? null) as $row) {
+			$row = TBayesianPayload::map($row);
+			$cat = new TBayesianCategory(TBayesianPayload::string($row['name'] ?? null));
 			$cat->setStats(
-				(int) ($row['documentCount'] ?? 0),
-				is_array($row['tokenCounts'] ?? null) ? array_map('intval', $row['tokenCounts']) : [],
-				is_array($row['tokenDocumentCounts'] ?? null) ? array_map('intval', $row['tokenDocumentCounts']) : [],
-				(int) ($row['totalTokens'] ?? 0)
+				TBayesianPayload::int($row['documentCount'] ?? null),
+				TBayesianPayload::intMap($row['tokenCounts'] ?? null),
+				TBayesianPayload::intMap($row['tokenDocumentCounts'] ?? null),
+				TBayesianPayload::int($row['totalTokens'] ?? null)
 			);
 			$categories[] = $cat;
 		}
 		$this->_vocabulary->setStats(
 			$categories,
-			is_array($payload['documentFrequency'] ?? null) ? array_map('intval', $payload['documentFrequency']) : [],
-			(int) ($payload['totalDocuments'] ?? 0)
+			TBayesianPayload::intMap($payload['documentFrequency'] ?? null),
+			TBayesianPayload::int($payload['totalDocuments'] ?? null)
 		);
-		$alpha = (float) ($payload['alpha'] ?? 1.0);
+		$alpha = TBayesianPayload::float($payload['alpha'] ?? null, 1.0);
 		$this->_alpha = $alpha > 0.0 ? $alpha : 1.0;
-		$this->_useTfidf = (bool) ($payload['useTfidf'] ?? true);
-		$this->_spamCategory = (string) ($payload['spamCategory'] ?? 'spam');
+		$this->_useTfidf = TBayesianPayload::bool($payload['useTfidf'] ?? null, true);
+		$this->_spamCategory = TBayesianPayload::string($payload['spamCategory'] ?? null, 'spam');
 		$tokenizer = $payload['tokenizer'] ?? null;
 		if (is_array($tokenizer)) {
-			$this->importTokenizer($tokenizer);
+			$this->importTokenizer(TBayesianPayload::map($tokenizer));
 		}
+		$this->importCalibrationAndExtra($payload);
 		$this->onTrainingChanged();
+	}
+
+	/**
+	 * Restores the calibration and the extra state a payload or per-token metadata carries;
+	 * a payload without them (0.1.0, or never calibrated) leaves both empty.
+	 * @param array<string, mixed> $payload The payload or metadata.
+	 */
+	private function importCalibrationAndExtra(array $payload): void
+	{
+		$calibration = $payload['calibration'] ?? null;
+		$this->_calibration = is_array($calibration) ? TTemperatureScaling::import(TBayesianPayload::map($calibration)) : null;
+		$this->_extra = [];
+		foreach (TBayesianPayload::map($payload['extra'] ?? null) as $owner => $state) {
+			if (is_array($state)) {
+				$this->_extra[$owner] = TBayesianPayload::map($state);
+			}
+		}
 	}
 
 	/**
@@ -719,7 +949,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	public function setAlpha(float $value): void
 	{
 		if (!($value > 0.0) || !is_finite($value)) {
-			throw new TInvalidDataValueException('bayesian_alpha_invalid', (string) $value);
+			throw new TInvalidDataValueException('bayesian_alpha_invalid', TBayesianPayload::formatFloat($value));
 		}
 		$this->_alpha = $value;
 	}

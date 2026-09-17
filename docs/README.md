@@ -5,7 +5,7 @@ Reference and background material for `belisoful/prado-bayesian`. The top-level
 
 | Page | What it covers |
 | --- | --- |
-| [Concepts](concepts.md) | How the extension works: the pipeline, the three Naive Bayes event models, smoothing, TF-IDF, log-space arithmetic, and evaluation |
+| [Concepts](concepts.md) | How the extension works: the pipeline, the three Naive Bayes event models, smoothing, TF-IDF, log-space arithmetic, untraining, calibration, multi-label tagging, and evaluation |
 | [Class reference](classes.md) | Every public class and interface, grouped by namespace, with its role and public API |
 | [Storage backends](storage.md) | The `IBayesianStorage` contract, the four backends, how to choose between them, and what a model costs in bytes and memory |
 | [Configuration](configuration.md) | Wiring the module and the HTTP service into a PRADO application (XML and PHP forms), and the full error-code list |
