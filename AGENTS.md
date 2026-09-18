@@ -8,7 +8,7 @@
 - **Backend suites**: the SQL/Redis tests skip without a server; see CONTRIBUTING.md for the `BAYESIAN_*` environment variables that enable them (`BAYESIAN_REQUIRE_BACKENDS=1` turns a skip into a failure, as CI does)
 
 ### Linting and Code Analysis
-- **Full check**: `composer fulltest` runs, in order, `composer lint` (`php -l` on src/ and tests/), `composer cs` (php-cs-fixer dry run), `composer stan` (PHPStan level 9, analysed as PHP 8.5) and `composer unittest`
+- **Full check**: `composer fulltest` runs, in order, `composer lint` (`php -l` on src/ and tests/), `composer cs` (php-cs-fixer dry run), `composer stan` (PHPStan level 3, analysed as PHP 8.5) and `composer unittest`
 - **PHPStan Analysis**: `composer stan` (`vendor/bin/phpstan analyse --memory-limit=512M`)
 - **PHP CS Fixer (Dry-run)**: `composer cs` (check)
 - **PHP CS Fixer (Fix)**: `composer fix` (apply fixes)

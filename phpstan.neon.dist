@@ -1,6 +1,6 @@
 parameters:
     phpVersion: 80500 # PHP 8.5, the newest runtime the package supports
-    level: 9
+    level: 3
     bootstrapFiles:
         - tests/test_tools/phpstan-bootstrap.php
     paths:

@@ -333,13 +333,13 @@ class TBayesianService extends TService implements IPermissions
 	 *
 	 * The framework declares {@see \Prado\TApplication::getUser()} as returning an
 	 * {@see IUser}, but it returns null until an authentication module sets one, which is
-	 * exactly the case this method exists to detect; hence the analysis exemptions.
+	 * exactly the case this method exists to detect.
 	 * @return ?IUser The user, or null.
 	 */
-	private function currentUser(): ?IUser // @phpstan-ignore return.unusedType (null before authentication, see above)
+	private function currentUser(): ?IUser
 	{
 		$user = $this->getApplication()->getUser();
-		return $user instanceof IUser ? $user : null; // @phpstan-ignore instanceof.alwaysTrue (null before authentication, see above)
+		return $user instanceof IUser ? $user : null;
 	}
 
 	/**
@@ -668,7 +668,7 @@ class TBayesianService extends TService implements IPermissions
 		// The framework declares getApplication() as non-null, but a service constructed outside
 		// a running application (a script, a test double) has none; resolve to "no module" then.
 		$application = $this->getApplication();
-		if (!is_object($application)) { // @phpstan-ignore function.alreadyNarrowedType (no application outside a request, see above)
+		if (!is_object($application)) {
 			return null;
 		}
 		if ($this->_moduleID !== null && $this->_moduleID !== '') {

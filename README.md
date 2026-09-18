@@ -624,7 +624,7 @@ composer update pradosoft/prado
 
 ```sh
 composer install
-composer fulltest       # the full check: lint, code style, static analysis (PHPStan level 9), unit tests
+composer fulltest       # the full check: lint, code style, static analysis (PHPStan level 3), unit tests
 composer unittest       # tests only
 composer fix            # apply the code style
 composer coverage       # tests with a coverage report
