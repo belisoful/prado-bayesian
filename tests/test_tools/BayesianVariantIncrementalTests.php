@@ -245,4 +245,27 @@ trait BayesianVariantIncrementalTests
 		$storage->delete('m');
 		self::assertSame([], TBayesianTokenHistogram::flatten($storage->loadTokenHistograms('m', TBayesianTokenHistogram::FAMILIES)));
 	}
+
+	public function testUntrainingADocumentThatWasNeverTrainedKeepsTheHistogramsConsistent()
+	{
+		// Every count clamps at zero, so the histograms must follow the clamped counts, not
+		// the deltas that were asked for.
+		foreach (self::variantClasses() as $class) {
+			$storage = $this->storage();
+			$source = new $class();
+			$source->setStorage($storage);
+			$source->setName('m');
+			$this->train($source)->save();
+			$trainer = new $class();
+			$trainer->setStorage($this->storageFor($storage));
+			$trainer->load('m');
+			$trainer->untrainOne('ham', 'cheap cheap cheap never seen words');
+			$trainer->untrainOne('spam', 'cheap cheap cheap');
+
+			$families = TBayesianTokenHistogram::families($storage->loadTokenMeta('m')['histograms'] ?? null);
+			$maintained = $storage->loadTokenHistograms('m', $families);
+			$storage->rebuildTokenHistograms('m', $families);
+			self::assertEquals($maintained, $storage->loadTokenHistograms('m', $families), $class);
+		}
+	}
 }

@@ -183,6 +183,18 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 	}
 
 	/**
+	 * @return array<string, array{0:string, 1:class-string<TNaiveBayesClassifier>}> Each backend with every classifier.
+	 */
+	public static function classifierBackends(): array
+	{
+		$cases = self::variantBackends();
+		foreach (array_keys(self::backends()) as $backend) {
+			$cases[$backend . ' multinomial'] = [$backend, TNaiveBayesClassifier::class];
+		}
+		return $cases;
+	}
+
+	/**
 	 * Bernoulli and Complement keep histograms over the whole vocabulary in the store.  Workers
 	 * training different categories at once all move them, so after the dust settles they must
 	 * equal a rebuild from the token rows, and the model must score exactly as a resident model
@@ -243,6 +255,77 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 		}
 		$families = \Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram::families($storage->loadTokenMeta('shared')['histograms'] ?? null);
 		self::assertNotSame([], $families);
+		$maintained = $storage->loadTokenHistograms('shared', $families);
+		$storage->rebuildTokenHistograms('shared', $families);
+		self::assertEquals($maintained, $storage->loadTokenHistograms('shared', $families), $backend . ': the maintained histograms equal a rebuild');
+	}
+
+	/**
+	 * Withdrawing documents moves the histograms the other way, through the clamped-decrement
+	 * path.  Workers withdraw what was trained, all at once, two of them in the same category
+	 * on the same rows, and the model must end exactly where a resident one does.  The
+	 * multinomial classifier runs too: it keeps no histograms, but the vocabulary must still
+	 * shrink by exactly the tokens no document contains any more.
+	 * @dataProvider classifierBackends
+	 * @param class-string<TNaiveBayesClassifier> $class
+	 */
+	public function testParallelWorkersUntrainingKeepTheVariantAggregatesExact(string $backend, string $class): void
+	{
+		[$storage, $description] = $this->storage($backend);
+		$reference = new $class();
+		$seed = new $class();
+		$seed->setStorage($storage);
+		$seed->setName('shared');
+		$categories = ['spam', 'ham', 'news', 'spam'];
+		$batches = [];
+		foreach ([['spam', 'cheap pills'], ['ham', 'team meeting cheap'], ['news', 'election results']] as [$category, $document]) {
+			$seed->trainOne($category, $document);
+			$reference->trainOne($category, $document);
+		}
+		for ($w = 0; $w < self::WORKERS; $w++) {
+			for ($d = 0; $d < self::DOCUMENTS_PER_WORKER; $d++) {
+				$document = "cheap cheap shared w{$w}tok{$d} common{$d}";
+				$batches[$w][] = $document;
+				$seed->trainOne($categories[$w], $document);
+			}
+		}
+		$seed->save();
+
+		$processes = [];
+		$pipes = [];
+		foreach ($batches as $w => $documents) {
+			$command = [
+				PHP_BINARY,
+				__DIR__ . '/../../../test_tools/bayesian-train-worker.php',
+				json_encode($description),
+				'shared',
+				$categories[$w],
+				json_encode($documents),
+				$class,
+				'untrain',
+			];
+			$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $procPipes);
+			self::assertIsResource($process);
+			$processes[$w] = $process;
+			$pipes[$w] = $procPipes;
+		}
+		foreach ($processes as $w => $process) {
+			$stderr = stream_get_contents($pipes[$w][2]);
+			fclose($pipes[$w][1]);
+			fclose($pipes[$w][2]);
+			self::assertSame(0, proc_close($process), "worker {$w} failed: {$stderr}");
+		}
+
+		$reader = new $class();
+		$reader->setStorage($storage);
+		$reader->load('shared');
+		self::assertSame(3, $reader->getVocabulary()->getTotalDocuments(), $backend . ': only the seed documents remain');
+		foreach (['cheap pills common3', 'team meeting election', 'shared w1tok2 results', 'nothing known'] as $probe) {
+			self::assertSame($reference->logScores($probe), $reader->logScores($probe), $backend . ' ' . $class . ': ' . $probe);
+		}
+		// Seed: cheap, pills, team, meeting, election, results.
+		self::assertSame(6, $reader->getVocabulary()->getVocabularySize(), $backend . ': the vocabulary shrank by exactly the withdrawn tokens');
+		$families = \Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram::families($storage->loadTokenMeta('shared')['histograms'] ?? null);
 		$maintained = $storage->loadTokenHistograms('shared', $families);
 		$storage->rebuildTokenHistograms('shared', $families);
 		self::assertEquals($maintained, $storage->loadTokenHistograms('shared', $families), $backend . ': the maintained histograms equal a rebuild');

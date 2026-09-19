@@ -61,9 +61,11 @@ use Prado\TComponent;
  *
  * A model whose metadata names histogram families (`histograms`, written by the Bernoulli and
  * Complement classifiers) also keeps those {@see TBayesianTokenHistogram} histograms in a
- * `_hist` table, moved inside the same transaction as the counts.  Such a write first locks the
- * model's counters row, so training writes to one such model run one after another — each is a
- * few statements — while models without histograms are written as concurrently as before.
+ * `_hist` table, moved inside the same transaction as the counts.  Bernoulli's histogram
+ * depends only on the row a training write already locks, so it moves without any further
+ * locking and such a model is written as concurrently as a multinomial one.  Complement's
+ * depends on a token's counts in every category, so a write to such a model first locks the
+ * model's counters row, and those writes run one after another — each is a few statements.
  *
  * The per-token layout carries a `layoutVersion` in the model's metadata row.  A model written
  * by 0.1.0 (layout 1) is upgraded in place on first read; a layout newer than this release
@@ -150,6 +152,9 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 * and MySQL refuses them past 64; the longest derived name is `<table>_tokens_lookup`.
 	 */
 	private const MAX_TABLE_LENGTH = 48;
+
+	/** How many times a write is attempted when the database reports a deadlock, and how many passes claim a vocabulary. */
+	private const MAX_WRITE_ATTEMPTS = 5;
 
 	/**
 	 * @var ?TDbConnection A connection handed in directly, used when no
@@ -895,32 +900,171 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 		$stored = $families === [] ? [] : $this->storedFamilies($name);
 		$families ??= $stored;
 		$rebuild = array_diff($families, $stored) !== [];
+		// The document-count family depends only on the (token, category) rows this write
+		// locks anyway, so it moves from their own transitions.  Any other family depends on a
+		// token's rows in every category, which only hold still under the model lock.
+		$rowLocal = !$rebuild && $families === [TBayesianTokenHistogram::FAMILY_DOCUMENTS];
+		$locked = $families !== [] && !$rowLocal;
 		$keys = array_combine(array_keys($rows), array_keys($rows));
-		$connection = $this->getDbConnection();
-		$transaction = $connection->beginTransaction();
-		try {
-			$before = [];
-			if ($families !== []) {
-				$this->lockModel($name);
-				$before = $rebuild ? [] : $this->selectTokenRows($name, $keys, true);
-			}
-			$newTokens = $this->insertVocabulary($name, array_keys($rows));
-			$this->incrementTokenRows($name, $category, $rows);
-			$this->incrementCategoryRow($name, $category, $documentDelta, $tokenDelta);
-			$this->incrementVocabularySize($name, $newTokens - $this->pruneVocabulary($name, $rows));
-			if ($rebuild) {
-				$this->rebuildHistogramRows($name, $families);
-			} elseif ($families !== []) {
-				$this->applyHistogramDelta($name, TBayesianTokenHistogram::delta($before, $this->selectTokenRows($name, $keys, true), $families));
-			}
-			if ($encoded !== null) {
-				$this->writeMetaRow($name, $encoded);
-			}
-			$transaction->commit();
-		} catch (\Throwable $e) {
-			$transaction->rollBack();
-			throw $e;
+		// A write that takes documents away may empty a token out of the vocabulary, which is
+		// a decision about the token's rows in every category: it holds the token exclusively.
+		$withdraws = false;
+		foreach ($rows as [, $docCount]) {
+			$withdraws = $withdraws || $docCount < 0;
 		}
+		$connection = $this->getDbConnection();
+		for ($attempt = 1; ; $attempt++) {
+			$transaction = $connection->beginTransaction();
+			try {
+				$this->applyDeltasInTransaction($name, $category, $rows, $keys, $families, $rebuild, $rowLocal, $locked, $withdraws, $documentDelta, $tokenDelta, $encoded);
+				$transaction->commit();
+				return;
+			} catch (\Throwable $e) {
+				$transaction->rollBack();
+				if ($attempt >= self::MAX_WRITE_ATTEMPTS || !self::isLockFailure($e)) {
+					throw $e;
+				}
+				// The database chose this transaction as a deadlock victim.  Every argument is
+				// an increment and nothing of the attempt survived the rollback, so the write
+				// is simply made again, after a short, growing, jittered pause.
+				usleep(random_int(1000, 5000) * $attempt);
+			}
+		}
+	}
+
+	/**
+	 * The body of {@see applyDeltas()}, inside its transaction.
+	 *
+	 * Locks are always taken in one order — the model's counters row when the histograms need
+	 * it, then the vocabulary rows of the document's tokens in sorted order, then the token
+	 * rows in sorted order, the category row, the counters row, and the histogram cells in
+	 * sorted order — so writers queue behind one another instead of deadlocking.
+	 * @param string $name The model name.
+	 * @param string $category The category the document was filed under.
+	 * @param array<string, array{0:int, 1:int}> $rows The count and document-count deltas, keyed by token storage key.
+	 * @param array<string, string> $keys The token storage keys, mapped to themselves.
+	 * @param string[] $families The histogram families the model keeps.
+	 * @param bool $rebuild Whether the families are to be recounted rather than moved.
+	 * @param bool $rowLocal Whether the histograms move from the written rows' own transitions.
+	 * @param bool $locked Whether the write holds the model lock.
+	 * @param bool $withdraws Whether any document count goes down.
+	 * @param int $documentDelta The change in the category's document count.
+	 * @param int $tokenDelta The change in the category's token total.
+	 * @param ?string $encoded The JSON-encoded metadata to write, or null to leave it.
+	 */
+	private function applyDeltasInTransaction(string $name, string $category, array $rows, array $keys, array $families, bool $rebuild, bool $rowLocal, bool $locked, bool $withdraws, int $documentDelta, int $tokenDelta, ?string $encoded): void
+	{
+		$before = [];
+		if ($locked) {
+			$this->lockModel($name);
+		}
+		$newTokens = $this->claimVocabulary($name, array_keys($rows), $withdraws);
+		if ($locked && !$rebuild) {
+			$before = $this->selectTokenRows($name, $keys, true);
+		}
+		$transitions = $this->incrementTokenRows($name, $category, $rows, $rowLocal);
+		$this->incrementCategoryRow($name, $category, $documentDelta, $tokenDelta);
+		$this->incrementVocabularySize($name, $newTokens - $this->pruneVocabulary($name, $rows));
+		if ($rebuild) {
+			$this->rebuildHistogramRows($name, $families);
+		} elseif ($rowLocal) {
+			$this->applyHistogramDelta($name, self::documentCountDelta($category, $transitions));
+		} elseif ($locked) {
+			$this->applyHistogramDelta($name, TBayesianTokenHistogram::delta($before, $this->selectTokenRows($name, $keys, true), $families));
+		}
+		if ($encoded !== null) {
+			$this->writeMetaRow($name, $encoded);
+		}
+	}
+
+	/**
+	 * Returns whether a failure is the database refusing a transaction over locks — a deadlock
+	 * or a serialization failure — which is safe to answer by running the transaction again.
+	 * @param \Throwable $e The failure.
+	 * @return bool Whether to retry.
+	 */
+	private static function isLockFailure(\Throwable $e): bool
+	{
+		for ($error = $e; $error !== null; $error = $error->getPrevious()) {
+			if (preg_match('/SQLSTATE\[(40001|40P01)\]/', $error->getMessage()) === 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Adds the document's tokens to the vocabulary and takes this transaction's hold on their
+	 * vocabulary rows, returning how many tokens were new.
+	 *
+	 * The vocabulary row is a token's lock.  A write that only adds documents holds it shared,
+	 * so trainers of different categories run side by side; a write that takes documents away
+	 * holds it exclusively, because whether the token leaves the vocabulary depends on its rows
+	 * in every category, and those only hold still while no other writer is inside the token.
+	 * Without it, two writers withdrawing a token's last documents from different categories
+	 * each see the other's row still alive and neither removes the token (or, on MySQL, each
+	 * waits for the other's row and one is killed).
+	 *
+	 * Existing rows are locked before the insert when the hold is exclusive, so that a lock is
+	 * never upgraded from the shared one MySQL's insert-ignore leaves on a duplicate.  A row
+	 * that another writer removed between the insert and the lock is inserted again.
+	 * @param string $name The model name.
+	 * @param array<int, int|string> $keys The token storage keys, in sorted order.
+	 * @param bool $exclusive Whether to hold the tokens exclusively.
+	 * @return int The number of tokens that were not in the vocabulary before.
+	 */
+	private function claimVocabulary(string $name, array $keys, bool $exclusive): int
+	{
+		$keys = array_map('strval', $keys);
+		if ($exclusive) {
+			$this->lockVocabularyRows($name, $keys, true);
+		}
+		$inserted = 0;
+		$pending = $keys;
+		for ($pass = 0; $pending !== [] && $pass < self::MAX_WRITE_ATTEMPTS; $pass++) {
+			$inserted += $this->insertVocabulary($name, $pending);
+			$pending = array_values(array_diff($pending, $this->lockVocabularyRows($name, $pending, $exclusive)));
+		}
+		return $inserted;
+	}
+
+	/**
+	 * Locks the vocabulary rows of the given tokens for the rest of the transaction, in token
+	 * order.  SQLite has no row locks — its writers are serialized by the database lock the
+	 * first write takes — so there every key counts as held.
+	 * @param string $name The model name.
+	 * @param string[] $keys The token storage keys.
+	 * @param bool $exclusive Whether to lock for update rather than for share.
+	 * @return string[] The keys whose rows exist and are now held.
+	 */
+	private function lockVocabularyRows(string $name, array $keys, bool $exclusive): array
+	{
+		$driver = $this->getDbConnection()->getDriverName();
+		if ($driver === 'sqlite') {
+			return $keys;
+		}
+		$mode = $exclusive ? 'FOR UPDATE' : ($driver === 'mysql' ? 'LOCK IN SHARE MODE' : 'FOR SHARE');
+		$held = [];
+		foreach (array_chunk($keys, self::TOKEN_CHUNK) as $chunk) {
+			$placeholders = [];
+			foreach ($chunk as $index => $_) {
+				$placeholders[] = ':t' . $index;
+			}
+			$command = $this->getDbConnection()->createCommand(sprintf(
+				'SELECT token FROM %s_vocab WHERE model = :model AND token IN (%s) ORDER BY token %s',
+				$this->_table,
+				implode(', ', $placeholders),
+				$mode
+			));
+			$command->bindValue(':model', $name);
+			foreach ($chunk as $index => $key) {
+				$command->bindValue(':t' . $index, $key);
+			}
+			foreach ($command->queryAll() as $row) {
+				$held[] = (string) $row['token'];
+			}
+		}
+		return $held;
 	}
 
 	/**
@@ -1007,9 +1151,10 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 
 	/**
 	 * Takes the model's write lock for the rest of the transaction by touching its counters
-	 * row.  Moving a histogram needs a token's rows in every category to hold still between
-	 * reading and writing them, and one lock per model gives that on every driver without any
-	 * lock-ordering between tokens.
+	 * row.  Moving a histogram that spans categories needs a token's rows in every category to
+	 * hold still between reading and writing them, and one lock per model gives that on every
+	 * driver without any lock-ordering between tokens.  The document-count family does not
+	 * need it (see {@see applyDeltas()}).
 	 * @param string $name The model name.
 	 */
 	private function lockModel(string $name): void
@@ -1068,7 +1213,9 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 
 	/**
 	 * Adds increments to histogram cells and removes the cells that reach zero.  The cells are
-	 * written in sorted order so two writers take their row locks in the same sequence.
+	 * written in sorted order so two writers take their row locks in the same sequence, and
+	 * only the cells this call decremented are candidates for removal, addressed by their full
+	 * key: a delete ranging over the model's cells would lock rows other writers hold.
 	 * @param string $name The model name.
 	 * @param array<string, int> $delta The increments, keyed by {@see TBayesianTokenHistogram::key()}.
 	 */
@@ -1109,9 +1256,35 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			}
 			$command->execute();
 		}
-		$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s WHERE model = :model AND cnt <= 0', $table));
-		$command->bindValue(':model', $name);
-		$command->execute();
+		$emptied = [];
+		foreach ($delta as $key => $change) {
+			$parts = $change < 0 ? TBayesianTokenHistogram::parseKey((string) $key) : null;
+			if ($parts !== null) {
+				$emptied[$parts[0]][$parts[1]][] = $parts[2];
+			}
+		}
+		foreach ($emptied as $family => $categories) {
+			foreach ($categories as $category => $values) {
+				foreach (array_chunk($values, self::TOKEN_CHUNK) as $chunk) {
+					$placeholders = [];
+					foreach ($chunk as $index => $_) {
+						$placeholders[] = ':v' . $index;
+					}
+					$command = $this->getDbConnection()->createCommand(sprintf(
+						'DELETE FROM %s WHERE model = :model AND fam = :fam AND category = :category AND val IN (%s) AND cnt <= 0',
+						$table,
+						implode(', ', $placeholders)
+					));
+					$command->bindValue(':model', $name);
+					$command->bindValue(':fam', (string) $family);
+					$command->bindValue(':category', (string) $category);
+					foreach ($chunk as $index => $value) {
+						$command->bindValue(':v' . $index, $value);
+					}
+					$command->execute();
+				}
+			}
+		}
 	}
 
 	/**
@@ -1287,10 +1460,14 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 * @param string $name The model name.
 	 * @param string $category The category name.
 	 * @param array<string, array{0:int, 1:int}> $rows The count and document-count deltas, keyed by token storage key.
+	 * @param bool $trackDocuments Whether to report each row's document count before and after.
+	 * @return array<string, array{0:int, 1:int}> The document count before and after the write,
+	 * keyed by token storage key; empty unless asked for.
 	 */
-	private function incrementTokenRows(string $name, string $category, array $rows): void
+	private function incrementTokenRows(string $name, string $category, array $rows, bool $trackDocuments = false): array
 	{
 		$table = $this->_table . '_tokens';
+		$transitions = [];
 		foreach (array_chunk($rows, self::ROW_CHUNK, true) as $batch) {
 			$values = [];
 			$bind = [];
@@ -1314,8 +1491,78 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			// Both cannot come from one bind, so rows with a negative delta are re-applied as
 			// an update when the row already existed.
 			$command->execute();
+			if ($trackDocuments) {
+				// The upsert holds this transaction's lock on every row of the batch, and has
+				// added the positive deltas but not the negative ones.  Read now, the rows give
+				// both ends of each transition exactly, whatever other writers are doing.
+				foreach ($this->selectLockedDocumentCounts($name, $category, array_keys($batch)) as $key => $current) {
+					$docCount = $batch[$key][1];
+					$transitions[$key] = $docCount >= 0 ? [$current - $docCount, $current] : [$current, max(0, $current + $docCount)];
+				}
+			}
 			$this->applyNegativeDeltas($name, $category, $batch);
 		}
+		return $transitions;
+	}
+
+	/**
+	 * Reads the document counts of rows this transaction has already locked, in one category.
+	 *
+	 * The read names the category so that it touches only those rows: reaching for the same
+	 * tokens' rows in other categories would take locks another writer may hold while waiting
+	 * for these.  It is a locking read so that MySQL returns the latest committed values rather
+	 * than the transaction's snapshot.
+	 * @param string $name The model name.
+	 * @param string $category The category name.
+	 * @param array<int, int|string> $keys The token storage keys.
+	 * @return array<string, int> The document counts, keyed by token storage key.
+	 */
+	private function selectLockedDocumentCounts(string $name, string $category, array $keys): array
+	{
+		$placeholders = [];
+		foreach ($keys as $index => $_) {
+			$placeholders[] = ':t' . $index;
+		}
+		$command = $this->getDbConnection()->createCommand(sprintf(
+			'SELECT token, doccnt FROM %s_tokens WHERE model = :model AND category = :category AND token IN (%s)%s',
+			$this->_table,
+			implode(', ', $placeholders),
+			$this->getDbConnection()->getDriverName() === 'sqlite' ? '' : ' FOR UPDATE'
+		));
+		$command->bindValue(':model', $name);
+		$command->bindValue(':category', $category);
+		foreach ($keys as $index => $key) {
+			$command->bindValue(':t' . $index, (string) $key);
+		}
+		$out = [];
+		foreach ($command->queryAll() as $row) {
+			$out[(string) $row['token']] = (int) $row['doccnt'];
+		}
+		return $out;
+	}
+
+	/**
+	 * Returns the document-count histogram increments of a set of row transitions: each row
+	 * leaves the cell of its old document count and enters the cell of its new one, and a count
+	 * of zero has no cell.
+	 * @param string $category The category name.
+	 * @param array<string, array{0:int, 1:int}> $transitions The document count before and after, per row.
+	 * @return array<string, int> The increments, keyed by {@see TBayesianTokenHistogram::key()}.
+	 */
+	private static function documentCountDelta(string $category, array $transitions): array
+	{
+		$delta = [];
+		foreach ($transitions as [$before, $after]) {
+			if ($before > 0) {
+				$key = TBayesianTokenHistogram::key(TBayesianTokenHistogram::FAMILY_DOCUMENTS, $category, $before);
+				$delta[$key] = ($delta[$key] ?? 0) - 1;
+			}
+			if ($after > 0) {
+				$key = TBayesianTokenHistogram::key(TBayesianTokenHistogram::FAMILY_DOCUMENTS, $category, $after);
+				$delta[$key] = ($delta[$key] ?? 0) + 1;
+			}
+		}
+		return array_filter($delta);
 	}
 
 	/**

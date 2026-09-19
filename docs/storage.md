@@ -97,10 +97,12 @@ over the distinct integers, weighted by how many tokens share each one. Those we
 - A loaded classifier reads them with the model (one small read) and again after each of its own
   training writes. They are integers and do not depend on alpha.
 
-SQL keeps them in the `<Table>_hist` table. A training write to a model that keeps histograms
-first locks the model's row in `<Table>_counters`, so such writes to one model run one after
-another (each is a handful of statements); models without histograms are written as concurrently
-as before. With `AutoCreateTable="false"`, create the table from
+SQL keeps them in the `<Table>_hist` table. Bernoulli's histogram depends only on the row a
+training write already locks, so it moves with no further locking and a Bernoulli model is
+written as concurrently as a multinomial one. Complement's depends on a token's counts in every
+category, so a write to a Complement model first locks the model's row in `<Table>_counters` and
+those writes run one after another (each is a handful of statements); different models never
+wait for each other. With `AutoCreateTable="false"`, create the table from
 `getCreateTokenTableSql()`. Redis keeps them in the `<KeyPrefix><name>:__hist` hash and moves
 them inside the same Lua script that moves the token's counts.
 
@@ -317,8 +319,12 @@ With `Mode="token"` the storage uses six tables: `<table>` for the metadata row,
 [Incremental training and the variants](#incremental-training-and-the-variants)). They are
 created on first use like the main table; with `AutoCreateTable="false"`, take the DDL from
 `getCreateTokenTableSql($driver)`. Training is a set of atomic upserts inside one transaction,
-so many processes may train at once ([Concurrency](#concurrency)); tokens are written in sorted
-order so two writers cannot deadlock on each other.
+so many processes may train at once ([Concurrency](#concurrency)). Every write takes its locks in
+one order — a token's `<table>_vocab` row first (shared by writes that add documents, exclusive
+for writes that withdraw them, since whether a token leaves the vocabulary depends on its rows in
+every category), then the token rows in sorted order — so writers queue rather than deadlock, and
+a write the database still picks as a deadlock victim is retried, which is safe because it is
+made of increments.
 
 Tokens are stored in a `VARCHAR(191)` column on MySQL and PostgreSQL. A token longer than 191
 characters, or one that is not valid UTF-8, is stored under a fixed-width surrogate key (its

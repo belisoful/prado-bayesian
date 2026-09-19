@@ -5,7 +5,7 @@
  * concurrency tests.  Several of these run at once against one model; the tests then assert
  * that every count is exact.
  *
- *     php bayesian-train-worker.php <storage-json> <model> <category> <documents-json> [classifier-class]
+ *     php bayesian-train-worker.php <storage-json> <model> <category> <documents-json> [classifier-class] [train|untrain]
  *
  * `storage-json` is `{"backend":"sql","dsn":...,"user":...,"password":...,"table":...}` or
  * `{"backend":"redis","prefix":...,"index":...}`.  Exits non-zero on any failure so the test
@@ -20,7 +20,7 @@ use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 use Belisoful\Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 
-[, $storageJson, $model, $category, $documentsJson, $classifierClass] = $argv + [null, '', '', '', '[]', TNaiveBayesClassifier::class];
+[, $storageJson, $model, $category, $documentsJson, $classifierClass, $operation] = $argv + [null, '', '', '', '[]', TNaiveBayesClassifier::class, 'train'];
 $config = json_decode((string) $storageJson, true);
 $documents = json_decode((string) $documentsJson, true);
 if (!is_array($config) || !is_array($documents) || $model === '' || $category === '') {
@@ -39,6 +39,10 @@ if (($config['backend'] ?? '') === 'redis') {
 	$storage->setPassword((string) ($config['password'] ?? ''));
 	$storage->setTable((string) ($config['table'] ?? 'bayesian_models'));
 }
+set_exception_handler(static function (\Throwable $e): void {
+	fwrite(STDERR, get_class($e) . ': ' . $e->getMessage() . "\n");
+	exit(1);
+});
 $storage->setMode('token');
 
 if (!is_a($classifierClass, TNaiveBayesClassifier::class, true)) {
@@ -49,5 +53,9 @@ $classifier = new $classifierClass();
 $classifier->setStorage($storage);
 $classifier->load($model);
 foreach ($documents as $document) {
-	$classifier->trainOne($category, (string) $document);
+	if ($operation === 'untrain') {
+		$classifier->untrainOne($category, (string) $document);
+	} else {
+		$classifier->trainOne($category, (string) $document);
+	}
 }
