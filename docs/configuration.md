@@ -362,6 +362,7 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | `bayesian_storage_pdo_connect_failed` | The connection could not be opened, or `ConnectionID` names no module |
 | `bayesian_storage_table_invalid` | `Table` is not a plain SQL identifier of at most 48 characters |
 | `bayesian_storage_mode_invalid` | `Mode` is neither `payload` nor `token` |
+| `bayesian_storage_histogram_mode_invalid` | `HistogramMode` (or the mode given to `setTokenHistogramMode()`) is none of `immediate`, `deferred`, `periodic` (see [Storage → Histogram modes](storage.md#histogram-modes-sql-complement)) |
 
 ### Per-token storage
 

@@ -4,6 +4,7 @@ use Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
 use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
 use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
+use Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
@@ -700,5 +701,158 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		$command->bindValue(':payload', json_encode($meta));
 		$command->bindValue(':name', $name);
 		$command->execute();
+	}
+
+	/** @return array<int, array{0:string}> The modes that take histogram work off the training write. */
+	public static function relaxedModes(): array
+	{
+		return [[TSqlBayesianStorage::HISTOGRAM_DEFERRED], [TSqlBayesianStorage::HISTOGRAM_PERIODIC]];
+	}
+
+	/**
+	 * Saves the corpus as a Complement model in the given histogram mode and returns a trainer
+	 * loaded from a second, default-configured storage.
+	 * @return array{0:TSqlBayesianStorage, 1:TComplementNaiveBayes}
+	 */
+	private function relaxedModel(string $mode): array
+	{
+		$storage = $this->storage();
+		$storage->setHistogramMode($mode);
+		$source = new TComplementNaiveBayes();
+		$source->setStorage($storage);
+		$source->setName('m');
+		$this->train($source)->save();
+		$trainer = new TComplementNaiveBayes();
+		$trainer->setStorage($this->storageFor($storage));
+		$trainer->load('m');
+		return [$storage, $trainer];
+	}
+
+	/**
+	 * @dataProvider relaxedModes
+	 */
+	public function testARelaxedModeLeavesTheHistogramsToMaintenance(string $mode)
+	{
+		[$storage, $trainer] = $this->relaxedModel($mode);
+		$families = [TBayesianTokenHistogram::FAMILY_GLOBAL, TBayesianTokenHistogram::FAMILY_CATEGORY_GLOBAL, TBayesianTokenHistogram::FAMILY_COMPLEMENT];
+		$saved = $storage->loadTokenHistograms('m', $families);
+		self::assertNotSame([], $saved);
+		self::assertSame($mode, $storage->loadTokenMeta('m')['histogramMode']);
+
+		$reference = $this->train(new TComplementNaiveBayes());
+		foreach ($this->extraDocuments() as [$category, $document]) {
+			$reference->trainOne($category, $document);
+			$trainer->trainOne($category, $document);
+		}
+		// The trainer came from a storage configured for the default mode: the model's own
+		// mode decides, and its training writes leave the histograms alone.
+		self::assertSame($mode, $storage->loadTokenMeta('m')['histogramMode'], 'training keeps the mode');
+		self::assertEquals($saved, $storage->loadTokenHistograms('m', $families), 'untouched by training');
+		$pending = $storage->getPendingTokenCount('m');
+		if ($mode === TSqlBayesianStorage::HISTOGRAM_DEFERRED) {
+			self::assertGreaterThan(0, $pending, 'the trained tokens are journalled');
+		} else {
+			self::assertSame(0, $pending, 'periodic mode keeps no journal');
+		}
+
+		self::assertGreaterThan(0, $storage->maintainTokenHistograms('m'));
+		self::assertSame(0, $storage->getPendingTokenCount('m'));
+		$reader = new TComplementNaiveBayes();
+		$reader->setStorage($this->storageFor($storage));
+		$reader->load('m');
+		$this->assertSameScores($reference, $reader, $mode . ' after maintenance');
+		$maintained = $storage->loadTokenHistograms('m', $families);
+		$storage->rebuildTokenHistograms('m', $families);
+		self::assertEquals($maintained, $storage->loadTokenHistograms('m', $families));
+	}
+
+	public function testDeferredFoldingWorksInBatchesAndFollowsUntraining()
+	{
+		[$storage, $trainer] = $this->relaxedModel(TSqlBayesianStorage::HISTOGRAM_DEFERRED);
+		foreach ($this->extraDocuments() as [$category, $document]) {
+			$trainer->trainOne($category, $document);
+		}
+		$pending = $storage->getPendingTokenCount('m');
+		self::assertSame(2, $storage->foldTokenHistograms('m', 2), 'a fold takes at most its limit');
+		self::assertSame($pending - 2, $storage->getPendingTokenCount('m'));
+		foreach (array_reverse($this->extraDocuments()) as [$category, $document]) {
+			$trainer->untrainOne($category, $document);
+		}
+		while ($storage->foldTokenHistograms('m', 3) > 0) {
+			// Drain the journal a few tokens at a time.
+		}
+		self::assertSame(0, $storage->getPendingTokenCount('m'));
+		self::assertSame(0, $storage->foldTokenHistograms('m'), 'nothing left to fold');
+
+		$reference = $this->train(new TComplementNaiveBayes());
+		$reader = new TComplementNaiveBayes();
+		$reader->setStorage($this->storageFor($storage));
+		$reader->load('m');
+		$this->assertSameScores($reference, $reader, 'trained, half folded, untrained, folded');
+	}
+
+	public function testAModelChangesHistogramModeAndStaysExact()
+	{
+		[$storage, $trainer] = $this->relaxedModel(TSqlBayesianStorage::HISTOGRAM_PERIODIC);
+		$reference = $this->train(new TComplementNaiveBayes());
+		$extras = $this->extraDocuments();
+		$reference->trainOne(...$extras[0]);
+		$trainer->trainOne(...$extras[0]);
+
+		// Periodic to deferred: the stale histograms are rebuilt on the way.
+		$storage->setTokenHistogramMode('m', TSqlBayesianStorage::HISTOGRAM_DEFERRED);
+		self::assertSame(TSqlBayesianStorage::HISTOGRAM_DEFERRED, $storage->loadTokenMeta('m')['histogramMode']);
+		$reference->trainOne(...$extras[1]);
+		$trainer->trainOne(...$extras[1]);
+		self::assertGreaterThan(0, $storage->getPendingTokenCount('m'));
+
+		// Deferred to immediate: the journal is folded on the way, and writes are exact again.
+		$storage->setTokenHistogramMode('m', TSqlBayesianStorage::HISTOGRAM_IMMEDIATE);
+		self::assertSame(0, $storage->getPendingTokenCount('m'));
+		$reference->trainOne(...$extras[2]);
+		$trainer->trainOne(...$extras[2]);
+		$this->assertSameScores($reference, $trainer, 'immediate again');
+		self::assertSame(0, $storage->maintainTokenHistograms('m'), 'an immediate model needs no maintenance');
+	}
+
+	public function testBernoulliIsExactInEveryHistogramMode()
+	{
+		// Its histogram moves from the rows a write already locks, so there is nothing to defer.
+		foreach (self::relaxedModes() as [$mode]) {
+			$storage = $this->storage();
+			$storage->setHistogramMode($mode);
+			$source = new TBernoulliNaiveBayes();
+			$source->setStorage($storage);
+			$source->setName('m');
+			$this->train($source)->save();
+			$trainer = new TBernoulliNaiveBayes();
+			$trainer->setStorage($this->storageFor($storage));
+			$trainer->load('m');
+			$reference = $this->train(new TBernoulliNaiveBayes());
+			foreach ($this->extraDocuments() as [$category, $document]) {
+				$reference->trainOne($category, $document);
+				$trainer->trainOne($category, $document);
+			}
+			$this->assertSameScores($reference, $trainer, 'bernoulli ' . $mode);
+			self::assertSame(0, $storage->getPendingTokenCount('m'));
+		}
+	}
+
+	public function testHistogramModeRejectsAnUnknownValue()
+	{
+		$storage = $this->storage();
+		self::assertSame(TSqlBayesianStorage::HISTOGRAM_IMMEDIATE, $storage->getHistogramMode());
+		$storage->setHistogramMode('deferred');
+		self::assertSame(TSqlBayesianStorage::HISTOGRAM_DEFERRED, $storage->getHistogramMode());
+		$this->expectException(\Prado\Exceptions\TInvalidDataValueException::class);
+		$storage->setHistogramMode('eventually');
+	}
+
+	public function testMaintenanceOfAnUnknownModelDoesNothing()
+	{
+		$storage = $this->storage();
+		self::assertSame(0, $storage->maintainTokenHistograms('nobody'));
+		self::assertSame(0, $storage->foldTokenHistograms('nobody'));
+		self::assertSame(0, $storage->getPendingTokenCount('nobody'));
 	}
 }

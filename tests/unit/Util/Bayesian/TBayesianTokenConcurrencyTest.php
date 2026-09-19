@@ -36,7 +36,7 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 				$storage->delete('shared');
 				if ($storage instanceof TSqlBayesianStorage) {
 					$connection = $storage->getDbConnection();
-					foreach (['', '_tokens', '_categories', '_vocab', '_counters', '_hist'] as $suffix) {
+					foreach (['', '_tokens', '_categories', '_vocab', '_counters', '_hist', '_journal', '_folded'] as $suffix) {
 						$connection->createCommand('DROP TABLE IF EXISTS ' . $storage->getTable() . $suffix)->execute();
 					}
 				}
@@ -329,5 +329,100 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 		$maintained = $storage->loadTokenHistograms('shared', $families);
 		$storage->rebuildTokenHistograms('shared', $families);
 		self::assertEquals($maintained, $storage->loadTokenHistograms('shared', $families), $backend . ': the maintained histograms equal a rebuild');
+	}
+
+	/**
+	 * @return array<string, array{0:string, 1:string}> Each SQL backend with each relaxed histogram mode.
+	 */
+	public static function relaxedBackends(): array
+	{
+		$cases = [];
+		foreach (['sqlite', 'mysql', 'pgsql'] as $backend) {
+			foreach ([TSqlBayesianStorage::HISTOGRAM_DEFERRED, TSqlBayesianStorage::HISTOGRAM_PERIODIC] as $mode) {
+				$cases[$backend . ' ' . $mode] = [$backend, $mode];
+			}
+		}
+		return $cases;
+	}
+
+	/**
+	 * A Complement model that leaves its histograms to maintenance: four workers train it side
+	 * by side while a fifth process folds (or recounts) continuously.  Whatever the interleaving,
+	 * once training has stopped and maintenance has run, the model scores exactly as a resident
+	 * one, and the histograms equal a recount.
+	 * @dataProvider relaxedBackends
+	 */
+	public function testMaintenanceRunningBesideTrainersConvergesExactly(string $backend, string $mode): void
+	{
+		[$storage, $description] = $this->storage($backend);
+		self::assertInstanceOf(TSqlBayesianStorage::class, $storage);
+		$storage->setHistogramMode($mode);
+		$reference = new TComplementNaiveBayes();
+		$seed = new TComplementNaiveBayes();
+		$seed->setStorage($storage);
+		$seed->setName('shared');
+		foreach ([['spam', 'cheap pills'], ['ham', 'team meeting cheap'], ['news', 'election results']] as [$category, $document]) {
+			$seed->trainOne($category, $document);
+			$reference->trainOne($category, $document);
+		}
+		$seed->save();
+
+		$stopFile = sys_get_temp_dir() . '/bayesian-maintain-stop-' . uniqid('', true);
+		$this->_files[] = $stopFile;
+		$maintainer = proc_open(
+			[PHP_BINARY, __DIR__ . '/../../../test_tools/bayesian-maintain-worker.php', json_encode($description), 'shared', $stopFile],
+			[1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+			$maintainerPipes
+		);
+		self::assertIsResource($maintainer);
+
+		$categories = ['spam', 'ham', 'news', 'spam'];
+		$processes = [];
+		$pipes = [];
+		for ($w = 0; $w < self::WORKERS; $w++) {
+			$documents = [];
+			for ($d = 0; $d < self::DOCUMENTS_PER_WORKER; $d++) {
+				$documents[] = "cheap cheap shared w{$w}tok{$d} common{$d}";
+				$reference->trainOne($categories[$w], end($documents));
+			}
+			$command = [
+				PHP_BINARY,
+				__DIR__ . '/../../../test_tools/bayesian-train-worker.php',
+				json_encode($description),
+				'shared',
+				$categories[$w],
+				json_encode($documents),
+				TComplementNaiveBayes::class,
+			];
+			$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $procPipes);
+			self::assertIsResource($process);
+			$processes[$w] = $process;
+			$pipes[$w] = $procPipes;
+		}
+		foreach ($processes as $w => $process) {
+			$stderr = stream_get_contents($pipes[$w][2]);
+			fclose($pipes[$w][1]);
+			fclose($pipes[$w][2]);
+			self::assertSame(0, proc_close($process), "worker {$w} failed: {$stderr}");
+		}
+		touch($stopFile);
+		$stderr = stream_get_contents($maintainerPipes[2]);
+		fclose($maintainerPipes[1]);
+		fclose($maintainerPipes[2]);
+		self::assertSame(0, proc_close($maintainer), "maintenance worker failed: {$stderr}");
+
+		self::assertSame($mode, $storage->loadTokenMeta('shared')['histogramMode'], 'the trainers kept the model in its mode');
+		$storage->maintainTokenHistograms('shared');
+		self::assertSame(0, $storage->getPendingTokenCount('shared'));
+		$reader = new TComplementNaiveBayes();
+		$reader->setStorage($storage);
+		$reader->load('shared');
+		foreach (['cheap pills common3', 'team meeting election', 'shared w1tok2 results', 'nothing known'] as $probe) {
+			self::assertSame($reference->logScores($probe), $reader->logScores($probe), $backend . ' ' . $mode . ': ' . $probe);
+		}
+		$families = \Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram::families($storage->loadTokenMeta('shared')['histograms'] ?? null);
+		$maintained = $storage->loadTokenHistograms('shared', $families);
+		$storage->rebuildTokenHistograms('shared', $families);
+		self::assertEquals($maintained, $storage->loadTokenHistograms('shared', $families), $backend . ' ' . $mode . ': the maintained histograms equal a recount');
 	}
 }

@@ -66,6 +66,10 @@ use Prado\TComponent;
  * locking and such a model is written as concurrently as a multinomial one.  Complement's
  * depends on a token's counts in every category, so a write to such a model first locks the
  * model's counters row, and those writes run one after another — each is a few statements.
+ * {@see setHistogramMode() HistogramMode} trades that for freshness, per model: `deferred`
+ * journals the touched tokens for a worker to fold in ({@see foldTokenHistograms()}), and
+ * `periodic` leaves the histograms to a scheduled {@see rebuildTokenHistograms()}; both let
+ * Complement writes run side by side, and both are served by {@see maintainTokenHistograms()}.
  *
  * The per-token layout carries a `layoutVersion` in the model's metadata row.  A model written
  * by 0.1.0 (layout 1) is upgraded in place on first read; a layout newer than this release
@@ -153,6 +157,31 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 */
 	private const MAX_TABLE_LENGTH = 48;
 
+	/**
+	 * Histograms move inside every training write, under the model lock when they span
+	 * categories: always exact, and writes to one Complement model run one after another.
+	 * @since 0.2.0
+	 */
+	public const HISTOGRAM_IMMEDIATE = 'immediate';
+
+	/**
+	 * Training writes only journal the tokens they touched; {@see foldTokenHistograms()}, run
+	 * by one worker, folds them into the histograms afterwards.  Writes run side by side, and
+	 * the histograms trail training by the worker's interval.
+	 * @since 0.2.0
+	 */
+	public const HISTOGRAM_DEFERRED = 'deferred';
+
+	/**
+	 * Training writes leave the histograms alone entirely; {@see rebuildTokenHistograms()}, run
+	 * on a schedule, recounts them.  The cheapest writes, the stalest histograms.
+	 * @since 0.2.0
+	 */
+	public const HISTOGRAM_PERIODIC = 'periodic';
+
+	/** The histogram family letter of the row that serves as a model's fold lock; never a real family. */
+	private const FOLD_LOCK_FAMILY = 'L';
+
 	/** How many times a write is attempted when the database reports a deadlock, and how many passes claim a vocabulary. */
 	private const MAX_WRITE_ATTEMPTS = 5;
 
@@ -185,6 +214,9 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 
 	/** @var ?IDataConnection The connection the table was last ensured on. */
 	private ?IDataConnection $_tableEnsuredOn = null;
+
+	/** @var string The histogram mode given to models this storage saves; one of the HISTOGRAM_* constants. */
+	private string $_histogramMode = self::HISTOGRAM_IMMEDIATE;
 
 	/** @var string Either {@see MODE_PAYLOAD} or {@see MODE_TOKEN}. */
 	private string $_mode = self::MODE_PAYLOAD;
@@ -488,6 +520,27 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			$int,
 			$int
 		);
+		// The deferred histogram mode: the tokens written since they were last folded, with a
+		// sequence that tells the folder whether a token was written again while it worked...
+		$statements[] = sprintf(
+			'CREATE TABLE IF NOT EXISTS %s_journal (model %s NOT NULL, token %s NOT NULL, seq %s NOT NULL, PRIMARY KEY (model, token))',
+			$this->_table,
+			$key,
+			$key,
+			$int
+		);
+		// ...and the token statistics as they were when last folded, which is the state the
+		// histograms describe and so the state a fold takes away before adding the current one.
+		$statements[] = sprintf(
+			'CREATE TABLE IF NOT EXISTS %s_folded (model %s NOT NULL, token %s NOT NULL, category %s NOT NULL,'
+				. ' cnt %s NOT NULL, doccnt %s NOT NULL, PRIMARY KEY (model, token, category))',
+			$this->_table,
+			$key,
+			$key,
+			$key,
+			$int,
+			$int
+		);
 		return $statements;
 	}
 
@@ -727,6 +780,13 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	public function saveTokenModel(string $name, array $meta, array $categories, array $tokens): void
 	{
 		$this->ensureTokenMode();
+		$families = TBayesianTokenHistogram::families($meta['histograms'] ?? null);
+		unset($meta['histogramMode']);
+		if ($families !== []) {
+			// A full save is a deliberate act of a configured process: the model takes this
+			// storage's mode, and every later writer follows the model.
+			$meta['histogramMode'] = $this->_histogramMode;
+		}
 		$encoded = $this->encodeMeta($meta);
 		$rows = [];
 		foreach ($tokens as $token => $perCategory) {
@@ -744,7 +804,10 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 				$this->incrementCategoryRow($name, (string) $category, max(0, (int) $stats['documentCount']), max(0, (int) $stats['totalTokens']));
 			}
 			$this->insertTokenRows($name, $rows);
-			$this->applyHistogramDelta($name, TBayesianTokenHistogram::build($tokens, TBayesianTokenHistogram::families($meta['histograms'] ?? null)));
+			$this->applyHistogramDelta($name, TBayesianTokenHistogram::build($tokens, $families));
+			if (self::effectiveMode($families, $meta) === self::HISTOGRAM_DEFERRED) {
+				$this->insertTokenRows($name, $rows, '_folded');
+			}
 			$this->incrementVocabularySize($name, $this->insertVocabulary($name, array_keys(self::encodeTokens(array_keys($tokens)))));
 			$transaction->commit();
 		} catch (\Throwable $e) {
@@ -824,9 +887,10 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 * @param array<string, string> $map The tokens, keyed by storage key.
 	 * @param bool $forUpdate Whether to read with row locks, which on MySQL also reads the
 	 * latest committed rows rather than the transaction's snapshot.
+	 * @param string $table The table suffix to read: the token rows, or their folded copy.
 	 * @return array<string, array<string, array{count:int, docCount:int}>> The statistics, keyed by token then category.
 	 */
-	private function selectTokenRows(string $name, array $map, bool $forUpdate): array
+	private function selectTokenRows(string $name, array $map, bool $forUpdate, string $table = '_tokens'): array
 	{
 		$suffix = $forUpdate && $this->getDbConnection()->getDriverName() !== 'sqlite' ? ' FOR UPDATE' : '';
 		$out = [];
@@ -836,8 +900,9 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 				$placeholders[] = ':t' . $index;
 			}
 			$sql = sprintf(
-				'SELECT token, category, cnt, doccnt FROM %s_tokens WHERE model = :model AND token IN (%s)%s',
+				'SELECT token, category, cnt, doccnt FROM %s%s WHERE model = :model AND token IN (%s)%s',
 				$this->_table,
+				$table,
 				implode(', ', $placeholders),
 				$suffix
 			);
@@ -885,7 +950,6 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	{
 		$this->ensureTokenMode();
 		$this->ensureLayout($name);
-		$encoded = $meta === [] ? null : $this->encodeMeta($meta);
 		$rows = [];
 		foreach ($tokenDeltas as $token => $delta) {
 			$rows[self::encodeToken((string) $token)] = [(int) ($delta['count'] ?? 0), (int) ($delta['docCount'] ?? 0)];
@@ -895,40 +959,45 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 		$tokenDelta = (int) ($categoryStats['totalTokens'] ?? 0);
 		// The histograms to keep are the ones the metadata names: the metadata being written
 		// when there is one, the stored metadata otherwise.  A family the writer names but the
-		// store does not hold yet is rebuilt after the write rather than moved.
+		// store does not hold yet is rebuilt rather than moved.
 		$families = $meta === [] ? null : TBayesianTokenHistogram::families($meta['histograms'] ?? null);
-		$stored = $families === [] ? [] : $this->storedFamilies($name);
+		$storedMeta = $families === [] ? null : $this->load($name);
+		$stored = TBayesianTokenHistogram::families(($storedMeta ?? [])['histograms'] ?? null);
 		$families ??= $stored;
 		$rebuild = array_diff($families, $stored) !== [];
-		// The document-count family depends only on the (token, category) rows this write
-		// locks anyway, so it moves from their own transitions.  Any other family depends on a
-		// token's rows in every category, which only hold still under the model lock.
-		$rowLocal = !$rebuild && $families === [TBayesianTokenHistogram::FAMILY_DOCUMENTS];
-		$locked = $families !== [] && !$rowLocal;
-		$keys = array_combine(array_keys($rows), array_keys($rows));
-		// A write that takes documents away may empty a token out of the vocabulary, which is
-		// a decision about the token's rows in every category: it holds the token exclusively.
-		$withdraws = false;
-		foreach ($rows as [, $docCount]) {
-			$withdraws = $withdraws || $docCount < 0;
+		// How the histograms are kept is the model's own setting, not the writer's: every
+		// process writing one model must treat its histograms the same way.
+		$mode = self::effectiveMode($families, $storedMeta ?? ['histogramMode' => $this->_histogramMode]);
+		unset($meta['histogramMode']);
+		if ($meta !== [] && $families !== []) {
+			$meta['histogramMode'] = self::storedMode($storedMeta ?? ['histogramMode' => $this->_histogramMode]);
 		}
-		$connection = $this->getDbConnection();
-		for ($attempt = 1; ; $attempt++) {
-			$transaction = $connection->beginTransaction();
-			try {
-				$this->applyDeltasInTransaction($name, $category, $rows, $keys, $families, $rebuild, $rowLocal, $locked, $withdraws, $documentDelta, $tokenDelta, $encoded);
-				$transaction->commit();
-				return;
-			} catch (\Throwable $e) {
-				$transaction->rollBack();
-				if ($attempt >= self::MAX_WRITE_ATTEMPTS || !self::isLockFailure($e)) {
-					throw $e;
-				}
-				// The database chose this transaction as a deadlock victim.  Every argument is
-				// an increment and nothing of the attempt survived the rollback, so the write
-				// is simply made again, after a short, growing, jittered pause.
-				usleep(random_int(1000, 5000) * $attempt);
-			}
+		$encoded = $meta === [] ? null : $this->encodeMeta($meta);
+		$plan = [
+			// The document-count family depends only on the (token, category) rows this write
+			// locks anyway, so it moves from their own transitions.
+			'rowLocal' => !$rebuild && $families === [TBayesianTokenHistogram::FAMILY_DOCUMENTS],
+			// Any other family depends on a token's rows in every category, which only hold
+			// still under the model lock — unless the model leaves them to maintenance.
+			'locked' => $mode === self::HISTOGRAM_IMMEDIATE && $families !== [] && ($rebuild || $families !== [TBayesianTokenHistogram::FAMILY_DOCUMENTS]),
+			'rebuild' => $rebuild && $mode === self::HISTOGRAM_IMMEDIATE,
+			'journal' => $mode === self::HISTOGRAM_DEFERRED,
+			'families' => $families,
+			// A write that takes documents away may empty a token out of the vocabulary, which
+			// is a decision about the token's rows in every category: it holds the token
+			// exclusively.
+			'withdraws' => false,
+		];
+		foreach ($rows as [, $docCount]) {
+			$plan['withdraws'] = $plan['withdraws'] || $docCount < 0;
+		}
+		$this->transactional(function () use ($name, $category, $rows, $plan, $documentDelta, $tokenDelta, $encoded): void {
+			$this->applyDeltasInTransaction($name, $category, $rows, $plan, $documentDelta, $tokenDelta, $encoded);
+		});
+		if ($rebuild && $mode !== self::HISTOGRAM_IMMEDIATE) {
+			// The model leaves its histograms to maintenance and has none yet: count them now,
+			// outside the write, the way maintenance would.
+			$this->rebuildTokenHistograms($name, $families);
 		}
 	}
 
@@ -942,35 +1011,39 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 * @param string $name The model name.
 	 * @param string $category The category the document was filed under.
 	 * @param array<string, array{0:int, 1:int}> $rows The count and document-count deltas, keyed by token storage key.
-	 * @param array<string, string> $keys The token storage keys, mapped to themselves.
-	 * @param string[] $families The histogram families the model keeps.
-	 * @param bool $rebuild Whether the families are to be recounted rather than moved.
-	 * @param bool $rowLocal Whether the histograms move from the written rows' own transitions.
-	 * @param bool $locked Whether the write holds the model lock.
-	 * @param bool $withdraws Whether any document count goes down.
+	 * @param array{rowLocal:bool, locked:bool, rebuild:bool, journal:bool, families:string[], withdraws:bool} $plan How the
+	 * histograms are kept for this write: moved from the written rows' own transitions, moved
+	 * under the model lock, recounted under it, or journalled for the folder; and whether any
+	 * document count goes down.
 	 * @param int $documentDelta The change in the category's document count.
 	 * @param int $tokenDelta The change in the category's token total.
 	 * @param ?string $encoded The JSON-encoded metadata to write, or null to leave it.
 	 */
-	private function applyDeltasInTransaction(string $name, string $category, array $rows, array $keys, array $families, bool $rebuild, bool $rowLocal, bool $locked, bool $withdraws, int $documentDelta, int $tokenDelta, ?string $encoded): void
+	private function applyDeltasInTransaction(string $name, string $category, array $rows, array $plan, int $documentDelta, int $tokenDelta, ?string $encoded): void
 	{
+		$keys = array_combine(array_map('strval', array_keys($rows)), array_map('strval', array_keys($rows)));
 		$before = [];
-		if ($locked) {
+		if ($plan['locked']) {
 			$this->lockModel($name);
 		}
-		$newTokens = $this->claimVocabulary($name, array_keys($rows), $withdraws);
-		if ($locked && !$rebuild) {
+		$newTokens = $this->claimVocabulary($name, array_keys($rows), $plan['withdraws']);
+		if ($plan['locked'] && !$plan['rebuild']) {
 			$before = $this->selectTokenRows($name, $keys, true);
 		}
-		$transitions = $this->incrementTokenRows($name, $category, $rows, $rowLocal);
+		$transitions = $this->incrementTokenRows($name, $category, $rows, $plan['rowLocal']);
 		$this->incrementCategoryRow($name, $category, $documentDelta, $tokenDelta);
 		$this->incrementVocabularySize($name, $newTokens - $this->pruneVocabulary($name, $rows));
-		if ($rebuild) {
-			$this->rebuildHistogramRows($name, $families);
-		} elseif ($rowLocal) {
+		if ($plan['rebuild']) {
+			$this->rebuildHistogramRows($name, $plan['families']);
+		} elseif ($plan['rowLocal']) {
 			$this->applyHistogramDelta($name, self::documentCountDelta($category, $transitions));
-		} elseif ($locked) {
-			$this->applyHistogramDelta($name, TBayesianTokenHistogram::delta($before, $this->selectTokenRows($name, $keys, true), $families));
+		} elseif ($plan['locked']) {
+			$this->applyHistogramDelta($name, TBayesianTokenHistogram::delta($before, $this->selectTokenRows($name, $keys, true), $plan['families']));
+		} elseif ($plan['journal']) {
+			// After the token rows, never before: the folder takes token rows and then journal
+			// rows too, and a mark made before the write could be consumed before the write
+			// it announces becomes visible.
+			$this->markJournal($name, array_keys($keys));
 		}
 		if ($encoded !== null) {
 			$this->writeMetaRow($name, $encoded);
@@ -1124,29 +1197,437 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			return;
 		}
 		$families = TBayesianTokenHistogram::families(array_merge($families, TBayesianTokenHistogram::families($meta['histograms'] ?? null)));
-		$transaction = $this->getDbConnection()->beginTransaction();
-		try {
+		$this->transactional(function () use ($name, $families, $meta): void {
+			$this->rebuildInTransaction($name, $families, $meta);
+		});
+	}
+
+	/**
+	 * The body of {@see rebuildTokenHistograms()}, inside its transaction.
+	 *
+	 * An immediate model is recounted under the model lock, which its writers hold too.  A
+	 * model that leaves its histograms to maintenance is recounted under the fold lock, which
+	 * its writers never take, so training goes on meanwhile; a deferred one first copies the
+	 * token rows into their folded copy and counts that, so the histograms describe exactly
+	 * the state the next fold will take away.
+	 * @param string $name The model name.
+	 * @param string[] $families The family letters to build.
+	 * @param array<string, mixed> $meta The model's metadata as read before the transaction.
+	 * @return int The number of histogram cells written.
+	 */
+	private function rebuildInTransaction(string $name, array $families, array $meta): int
+	{
+		$mode = self::effectiveMode($families, $meta);
+		if ($mode === self::HISTOGRAM_IMMEDIATE) {
 			$this->lockModel($name);
-			$this->rebuildHistogramRows($name, $families);
-			// Re-read under the lock: a trainer may have rewritten the metadata meanwhile.
-			$meta = $this->load($name) ?? $meta;
-			$meta['histograms'] = $families;
+		} else {
+			$this->lockFold($name);
+		}
+		if ($mode === self::HISTOGRAM_DEFERRED) {
+			$this->refreshFoldedRows($name);
+			$cells = $this->rebuildHistogramRows($name, $families, '_folded');
+		} else {
+			$cells = $this->rebuildHistogramRows($name, $families);
+		}
+		if ($mode === self::HISTOGRAM_IMMEDIATE) {
+			// Nothing journals or folds an immediate model; whatever a writer that started
+			// under an earlier mode left behind is covered by this recount.
+			$this->deleteModelRows($name, ['_journal', '_folded']);
+		}
+		// Re-read inside the transaction: a trainer may have rewritten the metadata meanwhile.
+		$meta = $this->load($name) ?? $meta;
+		$meta['histograms'] = $families;
+		$this->writeMetaRow($name, $this->encodeMeta($meta));
+		return $cells;
+	}
+
+	/**
+	 * Folds journalled tokens into the histograms of a model in the deferred mode: for each,
+	 * the cells its folded statistics counted towards lose one, the cells its current
+	 * statistics count towards gain one, and the current statistics become the folded ones.
+	 *
+	 * Run it from one worker — a cron job, a queue consumer, a loop in a console command.  Two
+	 * at once are safe (they take turns on the model's fold lock), just pointless.  Training
+	 * writes run alongside: a fold holds the rows of the tokens it is folding only for the
+	 * length of one small transaction, and a token written again while it was being folded
+	 * stays in the journal for the next fold.
+	 * @param string $name The model name.
+	 * @param int $limit The most tokens to fold in this call, and so in one transaction.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TInvalidDataValueException When the model's layout is newer than this release reads.
+	 * @throws TDbException When a statement fails.
+	 * @return int The number of tokens folded; 0 when the journal is empty, the model is
+	 * unknown, or the model is not in the deferred mode.
+	 * @since 0.2.0
+	 */
+	public function foldTokenHistograms(string $name, int $limit = 1000): int
+	{
+		$this->ensureTokenMode();
+		$this->ensureLayout($name);
+		$meta = $this->load($name);
+		$families = TBayesianTokenHistogram::families(($meta ?? [])['histograms'] ?? null);
+		if ($meta === null || self::effectiveMode($families, $meta) !== self::HISTOGRAM_DEFERRED) {
+			return 0;
+		}
+		$limit = max(1, $limit);
+		return $this->transactional(function () use ($name, $families, $limit): int {
+			$this->lockFold($name);
+			$command = $this->getDbConnection()->createCommand(sprintf(
+				'SELECT token, seq FROM %s_journal WHERE model = :model ORDER BY token LIMIT %d',
+				$this->_table,
+				$limit
+			));
+			$command->bindValue(':model', $name);
+			$batch = [];
+			foreach ($command->queryAll() as $row) {
+				$batch[(string) $row['token']] = (int) $row['seq'];
+			}
+			if ($batch === []) {
+				return 0;
+			}
+			$keys = array_combine(array_map('strval', array_keys($batch)), array_map('strval', array_keys($batch)));
+			// Token rows first, journal rows last: the order training writes take them in.
+			$live = $this->selectTokenRows($name, $keys, true);
+			$folded = $this->selectTokenRows($name, $keys, false, '_folded');
+			$this->applyHistogramDelta($name, TBayesianTokenHistogram::delta($folded, $live, $families));
+			$this->replaceFoldedRows($name, array_keys($keys), $live);
+			$this->deleteJournalRows($name, $batch);
+			return count($batch);
+		});
+	}
+
+	/**
+	 * Returns how many tokens of a model are journalled and not yet folded.
+	 * @param string $name The model name.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TDbException When the statement fails.
+	 * @return int The number of tokens waiting for {@see foldTokenHistograms()}.
+	 * @since 0.2.0
+	 */
+	public function getPendingTokenCount(string $name): int
+	{
+		$this->ensureTokenMode();
+		$command = $this->getDbConnection()->createCommand(sprintf('SELECT COUNT(*) FROM %s_journal WHERE model = :model', $this->_table));
+		$command->bindValue(':model', $name);
+		return TBayesianPayload::int($command->queryScalar());
+	}
+
+	/**
+	 * Brings a model's histograms up to date in whatever way its mode calls for: the one call
+	 * a maintenance worker needs.  A deferred model has its journal folded until it is empty;
+	 * a periodic model is recounted; an immediate model needs nothing, unless a writer that
+	 * started under an earlier mode left journal entries behind, in which case it is recounted
+	 * once.
+	 * @param string $name The model name.
+	 * @param int $batch The most tokens to fold per transaction, for a deferred model.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TInvalidDataValueException When the model's layout is newer than this release reads.
+	 * @throws TDbException When a statement fails.
+	 * @return int The tokens folded (deferred) or the histogram cells written (periodic, or an
+	 * immediate model that was repaired); 0 when there was nothing to do.
+	 * @since 0.2.0
+	 */
+	public function maintainTokenHistograms(string $name, int $batch = 1000): int
+	{
+		$this->ensureTokenMode();
+		$this->ensureLayout($name);
+		$meta = $this->load($name);
+		$families = TBayesianTokenHistogram::families(($meta ?? [])['histograms'] ?? null);
+		if ($meta === null || $families === []) {
+			return 0;
+		}
+		$mode = self::effectiveMode($families, $meta);
+		if ($mode === self::HISTOGRAM_DEFERRED) {
+			$total = 0;
+			while (($folded = $this->foldTokenHistograms($name, $batch)) > 0) {
+				$total += $folded;
+			}
+			return $total;
+		}
+		if ($mode === self::HISTOGRAM_IMMEDIATE && $this->getPendingTokenCount($name) === 0) {
+			return 0;
+		}
+		return $this->transactional(fn (): int => $this->rebuildInTransaction($name, $families, $meta));
+	}
+
+	/**
+	 * Changes how an existing model keeps its histograms, recounting them on the way so that
+	 * the model starts its new mode exact.
+	 *
+	 * Writers read a model's mode just before they write, so switch while training is paused
+	 * (a deploy, a maintenance window).  A writer caught mid-switch is not lost — its counts
+	 * land as always — but its histogram change may be missed; {@see maintainTokenHistograms()}
+	 * notices the journal entry such a writer leaves and recounts.
+	 * @param string $name The model name.
+	 * @param string $mode One of the HISTOGRAM_* constants.
+	 * @throws TInvalidDataValueException When the mode is not one of the constants.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TDbException When a statement fails.
+	 * @since 0.2.0
+	 */
+	public function setTokenHistogramMode(string $name, string $mode): void
+	{
+		self::assertHistogramMode($mode);
+		$this->ensureTokenMode();
+		$this->ensureLayout($name);
+		$meta = $this->load($name);
+		if ($meta === null) {
+			return;
+		}
+		$families = TBayesianTokenHistogram::families($meta['histograms'] ?? null);
+		if (self::effectiveMode($families, $meta) === self::HISTOGRAM_DEFERRED) {
+			$this->maintainTokenHistograms($name);
+		}
+		$meta = $this->load($name) ?? $meta;
+		$meta['histogramMode'] = $mode;
+		$this->transactional(function () use ($name, $families, $meta): void {
 			$this->writeMetaRow($name, $this->encodeMeta($meta));
-			$transaction->commit();
-		} catch (\Throwable $e) {
-			$transaction->rollBack();
-			throw $e;
+			if ($families !== []) {
+				$this->rebuildInTransaction($name, $families, $meta);
+			}
+		});
+	}
+
+	/**
+	 * Returns the histogram mode this storage gives the models it saves.
+	 * @return string One of the HISTOGRAM_* constants.
+	 * @since 0.2.0
+	 */
+	public function getHistogramMode(): string
+	{
+		return $this->_histogramMode;
+	}
+
+	/**
+	 * Sets how the models this storage saves keep histograms that span categories — in
+	 * practice, how Complement Naive Bayes models are trained through per-token storage:
+	 *
+	 * - `immediate` (the default): every training write moves them, under a per-model lock.
+	 *   Always exact; writes to one model run one after another.
+	 * - `deferred`: training writes journal the tokens they touched and a worker calling
+	 *   {@see maintainTokenHistograms()} folds them in.  Writes run side by side; scores trail
+	 *   training by the worker's interval and are exact once the journal is empty.
+	 * - `periodic`: training writes do nothing extra and a scheduled
+	 *   {@see maintainTokenHistograms()} recounts the histograms in the database.  The
+	 *   cheapest writes; scores trail training by the schedule.
+	 *
+	 * The mode is recorded in a model's metadata when the model is saved, and from then on
+	 * every writer follows the model, whatever its own storage is configured with; change an
+	 * existing model with {@see setTokenHistogramMode()}.  Models whose histograms need no lock
+	 * (Bernoulli) or that keep none (multinomial) are unaffected.
+	 * @param string $value One of `immediate`, `deferred`, `periodic`.
+	 * @throws TInvalidDataValueException When the value is none of them.
+	 * @since 0.2.0
+	 */
+	public function setHistogramMode(string $value): void
+	{
+		self::assertHistogramMode($value);
+		$this->_histogramMode = $value;
+	}
+
+	/**
+	 * Throws unless the value is a histogram mode.
+	 * @param string $value The value.
+	 * @throws TInvalidDataValueException When it is not.
+	 */
+	private static function assertHistogramMode(string $value): void
+	{
+		if (!in_array($value, [self::HISTOGRAM_IMMEDIATE, self::HISTOGRAM_DEFERRED, self::HISTOGRAM_PERIODIC], true)) {
+			throw new TInvalidDataValueException('bayesian_storage_histogram_mode_invalid', $value);
 		}
 	}
 
 	/**
-	 * Returns the histogram families the stored metadata of a model names.
-	 * @param string $name The model name.
-	 * @return string[] The family letters.
+	 * Returns the histogram mode a model's metadata records; a model that records none, or an
+	 * unknown one, is immediate.
+	 * @param array<string, mixed> $meta The model's metadata.
+	 * @return string One of the HISTOGRAM_* constants.
 	 */
-	private function storedFamilies(string $name): array
+	private static function storedMode(array $meta): string
 	{
-		return TBayesianTokenHistogram::families(($this->load($name) ?? [])['histograms'] ?? null);
+		$mode = $meta['histogramMode'] ?? null;
+		return $mode === self::HISTOGRAM_DEFERRED || $mode === self::HISTOGRAM_PERIODIC ? $mode : self::HISTOGRAM_IMMEDIATE;
+	}
+
+	/**
+	 * Returns the mode that governs a model's writes.  Only histograms that span categories
+	 * have anything to gain from being deferred: a model that keeps none, or only the
+	 * document-count family, is immediate whatever its metadata says.
+	 * @param string[] $families The histogram families the model keeps.
+	 * @param array<string, mixed> $meta The model's metadata.
+	 * @return string One of the HISTOGRAM_* constants.
+	 */
+	private static function effectiveMode(array $families, array $meta): string
+	{
+		if ($families === [] || $families === [TBayesianTokenHistogram::FAMILY_DOCUMENTS]) {
+			return self::HISTOGRAM_IMMEDIATE;
+		}
+		return self::storedMode($meta);
+	}
+
+	/**
+	 * Runs a unit of work in a transaction, running it again when the database refuses the
+	 * transaction over locks.  The work must be safe to repeat after a rollback: increments,
+	 * or a computation from what it reads inside the transaction.
+	 * @template T
+	 * @param callable(): T $work The work.
+	 * @throws \Throwable Whatever the work throws, once it is not a lock failure or the attempts are used up.
+	 * @return T What the work returned.
+	 */
+	private function transactional(callable $work)
+	{
+		for ($attempt = 1; ; $attempt++) {
+			$transaction = $this->getDbConnection()->beginTransaction();
+			try {
+				$result = $work();
+				$transaction->commit();
+				return $result;
+			} catch (\Throwable $e) {
+				$transaction->rollBack();
+				if ($attempt >= self::MAX_WRITE_ATTEMPTS || !self::isLockFailure($e)) {
+					throw $e;
+				}
+				// The database chose this transaction as a deadlock victim.  Nothing of the
+				// attempt survived the rollback, so the work is simply done again, after a
+				// short, growing, jittered pause.
+				usleep(random_int(1000, 5000) * $attempt);
+			}
+		}
+	}
+
+	/**
+	 * Takes a model's fold lock for the rest of the transaction: a row of the histogram table
+	 * that is not a histogram cell.  Folds and recounts of a model that leaves its histograms
+	 * to maintenance take turns on it.  It is not the counters row, because every training
+	 * write touches that one after its token rows, and a fold needs token rows after its lock.
+	 * @param string $name The model name.
+	 */
+	private function lockFold(string $name): void
+	{
+		$table = $this->_table . '_hist';
+		$update = $this->getDbConnection()->getDriverName() === 'mysql'
+			? 'ON DUPLICATE KEY UPDATE cnt = cnt'
+			: sprintf('ON CONFLICT (model, fam, category, val) DO UPDATE SET cnt = %s.cnt', $table);
+		$command = $this->getDbConnection()->createCommand(sprintf("INSERT INTO %s (model, fam, category, val, cnt) VALUES (:model, :fam, '', 0, 0) %s", $table, $update));
+		$command->bindValue(':model', $name);
+		$command->bindValue(':fam', self::FOLD_LOCK_FAMILY);
+		$command->execute();
+	}
+
+	/**
+	 * Records that tokens were written, for the folder.  Each mark bumps the token's sequence,
+	 * so a fold that read the journal before the mark leaves the entry in place.
+	 * @param string $name The model name.
+	 * @param string[] $keys The token storage keys, in sorted order.
+	 */
+	private function markJournal(string $name, array $keys): void
+	{
+		$table = $this->_table . '_journal';
+		$update = $this->getDbConnection()->getDriverName() === 'mysql'
+			? 'ON DUPLICATE KEY UPDATE seq = seq + 1'
+			: sprintf('ON CONFLICT (model, token) DO UPDATE SET seq = %s.seq + 1', $table);
+		foreach (array_chunk($keys, self::ROW_CHUNK) as $batch) {
+			$values = [];
+			$bind = [];
+			foreach ($batch as $index => $key) {
+				$values[] = sprintf('(:m%1$d, :t%1$d, 1)', $index);
+				$bind[':m' . $index] = $name;
+				$bind[':t' . $index] = $key;
+			}
+			$command = $this->getDbConnection()->createCommand(sprintf('INSERT INTO %s (model, token, seq) VALUES %s %s', $table, implode(', ', $values), $update));
+			foreach ($bind as $placeholder => $value) {
+				$command->bindValue($placeholder, $value);
+			}
+			$command->execute();
+		}
+	}
+
+	/**
+	 * Removes the journal entries a fold has consumed — those whose sequence is still the one
+	 * the fold read.  An entry marked again since then stays for the next fold.
+	 * @param string $name The model name.
+	 * @param array<string, int> $batch The sequence read for each token storage key.
+	 */
+	private function deleteJournalRows(string $name, array $batch): void
+	{
+		foreach (array_chunk($batch, self::ROW_CHUNK, true) as $chunk) {
+			$conditions = [];
+			$bind = [];
+			$index = 0;
+			foreach ($chunk as $key => $sequence) {
+				$conditions[] = sprintf('(token = :t%1$d AND seq = :s%1$d)', $index);
+				$bind[':t' . $index] = (string) $key;
+				$bind[':s' . $index] = $sequence;
+				$index++;
+			}
+			$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s_journal WHERE model = :model AND (%s)', $this->_table, implode(' OR ', $conditions)));
+			$command->bindValue(':model', $name);
+			foreach ($bind as $placeholder => $value) {
+				$command->bindValue($placeholder, $value);
+			}
+			$command->execute();
+		}
+	}
+
+	/**
+	 * Makes the given tokens' folded statistics equal to the statistics just folded.
+	 * @param string $name The model name.
+	 * @param string[] $keys The token storage keys.
+	 * @param array<string, array<string, array{count:int, docCount:int}>> $live The statistics folded, keyed by token storage key then category.
+	 */
+	private function replaceFoldedRows(string $name, array $keys, array $live): void
+	{
+		foreach (array_chunk($keys, self::TOKEN_CHUNK) as $chunk) {
+			$placeholders = [];
+			foreach ($chunk as $index => $_) {
+				$placeholders[] = ':t' . $index;
+			}
+			$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s_folded WHERE model = :model AND token IN (%s)', $this->_table, implode(', ', $placeholders)));
+			$command->bindValue(':model', $name);
+			foreach ($chunk as $index => $key) {
+				$command->bindValue(':t' . $index, $key);
+			}
+			$command->execute();
+		}
+		$rows = [];
+		foreach ($live as $key => $categories) {
+			foreach ($categories as $category => $stats) {
+				if ($stats['count'] > 0 || $stats['docCount'] > 0) {
+					$rows[] = [(string) $key, (string) $category, $stats['count'], $stats['docCount']];
+				}
+			}
+		}
+		$this->insertTokenRows($name, $rows, '_folded');
+	}
+
+	/**
+	 * Replaces a model's folded statistics with a copy of its token rows, inside the database.
+	 * @param string $name The model name.
+	 */
+	private function refreshFoldedRows(string $name): void
+	{
+		$this->deleteModelRows($name, ['_folded']);
+		$command = $this->getDbConnection()->createCommand(sprintf(
+			'INSERT INTO %1$s_folded (model, token, category, cnt, doccnt)'
+				. ' SELECT model, token, category, cnt, doccnt FROM %1$s_tokens WHERE model = :model AND (cnt > 0 OR doccnt > 0)',
+			$this->_table
+		));
+		$command->bindValue(':model', $name);
+		$command->execute();
+	}
+
+	/**
+	 * Removes a model's rows from the given per-token tables.
+	 * @param string $name The model name.
+	 * @param string[] $suffixes The table suffixes.
+	 */
+	private function deleteModelRows(string $name, array $suffixes): void
+	{
+		foreach ($suffixes as $suffix) {
+			$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s%s WHERE model = :model', $this->_table, $suffix));
+			$command->bindValue(':model', $name);
+			$command->execute();
+		}
 	}
 
 	/**
@@ -1167,48 +1648,61 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 * the caller's transaction, under the model lock.
 	 * @param string $name The model name.
 	 * @param string[] $families The family letters.
+	 * @param string $source The table suffix to count: the token rows, or their folded copy.
+	 * @return int The number of histogram cells written.
 	 */
-	private function rebuildHistogramRows(string $name, array $families): void
+	private function rebuildHistogramRows(string $name, array $families, string $source = '_tokens'): int
 	{
-		$tokens = $this->_table . '_tokens';
+		$tokens = $this->_table . $source;
+		$bind = [];
+		$model = static function () use (&$bind, $name): string {
+			$placeholder = ':m' . count($bind);
+			$bind[$placeholder] = $name;
+			return $placeholder;
+		};
 		// The vocabulary is the tokens some document contains; `x` gives each its global count.
-		$vocabulary = sprintf('(SELECT token, SUM(cnt) AS g FROM %s WHERE model = :m1 GROUP BY token HAVING SUM(doccnt) > 0) x', $tokens);
-		$queries = [
-			TBayesianTokenHistogram::FAMILY_DOCUMENTS => sprintf(
-				'SELECT category, doccnt AS val, COUNT(*) AS n FROM %s WHERE model = :m1 AND doccnt > 0 GROUP BY category, doccnt',
-				$tokens
-			),
-			TBayesianTokenHistogram::FAMILY_GLOBAL => sprintf("SELECT '' AS category, x.g AS val, COUNT(*) AS n FROM %s GROUP BY x.g", $vocabulary),
-			TBayesianTokenHistogram::FAMILY_CATEGORY_GLOBAL => sprintf(
-				'SELECT t.category AS category, x.g AS val, COUNT(*) AS n FROM %s t JOIN %s ON x.token = t.token'
-					. ' WHERE t.model = :m2 AND t.cnt > 0 GROUP BY t.category, x.g',
-				$tokens,
-				$vocabulary
-			),
-			TBayesianTokenHistogram::FAMILY_COMPLEMENT => sprintf(
-				'SELECT t.category AS category, x.g - t.cnt AS val, COUNT(*) AS n FROM %s t JOIN %s ON x.token = t.token'
-					. ' WHERE t.model = :m2 AND t.cnt > 0 GROUP BY t.category, x.g - t.cnt',
-				$tokens,
-				$vocabulary
-			),
-		];
+		$vocabulary = static fn (): string => sprintf('(SELECT token, SUM(cnt) AS g FROM %s WHERE model = %s GROUP BY token HAVING SUM(doccnt) > 0) x', $tokens, $model());
+		$parts = [];
+		foreach ($families as $family) {
+			$literal = "'" . $family . "'";
+			if ($family === TBayesianTokenHistogram::FAMILY_DOCUMENTS) {
+				$parts[] = sprintf('SELECT %s AS fam, category, doccnt AS val, COUNT(*) AS n FROM %s WHERE model = %s AND doccnt > 0 GROUP BY category, doccnt', $literal, $tokens, $model());
+			} elseif ($family === TBayesianTokenHistogram::FAMILY_GLOBAL) {
+				$parts[] = sprintf("SELECT %s AS fam, '' AS category, x.g AS val, COUNT(*) AS n FROM %s GROUP BY x.g", $literal, $vocabulary());
+			} else {
+				$value = $family === TBayesianTokenHistogram::FAMILY_COMPLEMENT ? 'x.g - t.cnt' : 'x.g';
+				$parts[] = sprintf(
+					'SELECT %1$s AS fam, t.category AS category, %2$s AS val, COUNT(*) AS n FROM %3$s t JOIN %4$s ON x.token = t.token'
+						. ' WHERE t.model = %5$s AND t.cnt > 0 GROUP BY t.category, %2$s',
+					$literal,
+					$value,
+					$tokens,
+					$vocabulary(),
+					$model()
+				);
+			}
+		}
+		if ($parts === []) {
+			return 0;
+		}
+		// One statement, so that every family is counted from the same snapshot even while
+		// training writes go on: the complement counts are merged from three of them.
+		$command = $this->getDbConnection()->createCommand(implode(' UNION ALL ', $parts));
+		foreach ($bind as $placeholder => $value) {
+			$command->bindValue($placeholder, $value);
+		}
 		$flat = [];
+		foreach ($command->queryAll() as $row) {
+			$flat[TBayesianTokenHistogram::key((string) $row['fam'], (string) $row['category'], (int) $row['val'])] = (int) $row['n'];
+		}
 		foreach ($families as $family) {
 			$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s_hist WHERE model = :model AND fam = :fam', $this->_table));
 			$command->bindValue(':model', $name);
 			$command->bindValue(':fam', $family);
 			$command->execute();
-			$sql = $queries[$family];
-			$command = $this->getDbConnection()->createCommand($sql);
-			$command->bindValue(':m1', $name);
-			if (strpos($sql, ':m2') !== false) {
-				$command->bindValue(':m2', $name);
-			}
-			foreach ($command->queryAll() as $row) {
-				$flat[TBayesianTokenHistogram::key($family, (string) $row['category'], (int) $row['val'])] = (int) $row['n'];
-			}
 		}
 		$this->applyHistogramDelta($name, $flat);
+		return count($flat);
 	}
 
 	/**
@@ -1730,13 +2224,14 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 * Inserts token rows in batches.
 	 * @param string $name The model name.
 	 * @param array<int, array{0:string,1:string,2:int,3:int}> $rows The rows.
+	 * @param string $suffix The table to insert into: the token rows, or their folded copy.
 	 */
-	private function insertTokenRows(string $name, array $rows): void
+	private function insertTokenRows(string $name, array $rows, string $suffix = '_tokens'): void
 	{
 		if ($rows === []) {
 			return;
 		}
-		$table = $this->_table . '_tokens';
+		$table = $this->_table . $suffix;
 		foreach (array_chunk($rows, self::ROW_CHUNK) as $batch) {
 			$values = [];
 			$bind = [];
@@ -1763,7 +2258,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	 */
 	private function deleteTokenRows(string $name): void
 	{
-		foreach (['_tokens', '_categories', '_vocab', '_counters', '_hist'] as $suffix) {
+		foreach (['_tokens', '_categories', '_vocab', '_counters', '_hist', '_journal', '_folded'] as $suffix) {
 			$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s%s WHERE model = :model', $this->_table, $suffix));
 			$command->bindValue(':model', $name);
 			$command->execute();

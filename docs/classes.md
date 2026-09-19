@@ -434,7 +434,9 @@ Covered in full on its own page: [Storage backends](storage.md).
 `IBayesianStorage`, `IBayesianTokenStorage` and `IBayesianHistogramStorage` (`loadTokenHistograms()`,
 `rebuildTokenHistograms()`), `TMemoryBayesianStorage`,
 `TFileBayesianStorage` (`FileMode`, `DirectoryMode`), `TSqlBayesianStorage` (whole-payload or
-per-token via `Mode`, connection configured through `TDbPropertiesTrait`, `TOKEN_LAYOUT_VERSION`),
+per-token via `Mode`, connection configured through `TDbPropertiesTrait`, `TOKEN_LAYOUT_VERSION`;
+`HistogramMode` with `maintainTokenHistograms()`, `foldTokenHistograms()`, `getPendingTokenCount()`
+and `setTokenHistogramMode()` for Complement models trained from many processes),
 `TRedisBayesianStorage` (whole-payload or per-token via `Mode`, `TOKEN_LAYOUT_VERSION`). In
 per-token mode both apply training as atomic increments, so several processes may train one model
 at once; see [Storage → Concurrency](storage.md#concurrency).

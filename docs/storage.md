@@ -106,6 +106,51 @@ wait for each other. With `AutoCreateTable="false"`, create the table from
 `getCreateTokenTableSql()`. Redis keeps them in the `<KeyPrefix><name>:__hist` hash and moves
 them inside the same Lua script that moves the token's counts.
 
+#### Histogram modes (SQL, Complement)
+
+The per-model lock is the price of histograms that are exact after every write. When a
+Complement model is trained from many processes and a slightly stale score is acceptable,
+`HistogramMode` on `TSqlBayesianStorage` trades freshness for concurrency:
+
+| `HistogramMode` | A training write | The histograms | Writers to one model |
+| --- | --- | --- | --- |
+| `immediate` (default) | moves them, under the model lock | exact after every write | one after another |
+| `deferred` | journals the tokens it touched (`<Table>_journal`) | trail training until a worker folds the journal; exact once it is empty | side by side |
+| `periodic` | does nothing extra | trail training until the next scheduled recount | side by side, at the cost of a multinomial write |
+
+Both relaxed modes are served by one call, `maintainTokenHistograms($name)`: it folds a deferred
+model's journal until it is empty and recounts a periodic model. Run it from **one** worker — a
+cron job, a queue consumer, a loop in a console command:
+
+```php
+$storage = $module->getStorage();                 // the configured TSqlBayesianStorage
+foreach (['comments', 'submissions'] as $model) {
+    $storage->maintainTokenHistograms($model);    // returns the tokens folded / cells written
+}
+```
+
+A fold costs in proportion to the tokens written since the last one and holds their rows only
+for one small transaction (`foldTokenHistograms($name, $limit)` folds one batch), so a deferred
+worker can run every few seconds or continuously. A recount costs in proportion to the model
+and runs inside the database, so a periodic worker suits minutes or hours. Two workers at once
+are safe — they take turns on the model's fold lock — just pointless. `getPendingTokenCount()`
+reports the journal's length, which is the thing to monitor.
+
+Between maintenance runs a Complement model scores with the histograms of the last run and the
+counts of now, which shifts its weight norms slightly; rankings of clearly different documents
+are unaffected, and scores are exact again after the next run. Do not use a relaxed mode where
+every score must reflect every write the instant it lands.
+
+The mode belongs to the model, not to the writer: it is recorded in the model's metadata
+(`histogramMode`) when the model is saved through a storage configured with it, and from then on
+every process follows the model whatever its own `HistogramMode` says. Change an existing model
+with `setTokenHistogramMode($name, $mode)`, which recounts on the way; do it while training is
+paused, since a writer caught mid-switch may have its histogram change missed until the next
+`maintainTokenHistograms()`, which notices and recounts. Bernoulli and the multinomial
+classifiers ignore the mode: they have no lock to avoid. The deferred mode keeps a copy of the
+token statistics as last folded (`<Table>_folded`), so a deferred Complement model takes roughly
+twice the rows of an immediate one. Redis has no modes; its writes are atomic scripts already.
+
 A per-token Bernoulli or Complement model stored before histograms existed has none. They are
 built in the store the first time such a model is loaded or trained — grouped queries in SQL, one
 Lua script in Redis — and recorded in the metadata. That rebuild is the one step proportional to
@@ -312,11 +357,13 @@ suffixes, and PostgreSQL and MySQL cap identifiers at 63/64) and throws
 
 #### Per-token mode
 
-With `Mode="token"` the storage uses six tables: `<table>` for the metadata row,
+With `Mode="token"` the storage uses eight tables: `<table>` for the metadata row,
 `<table>_tokens` (one row per model, token and category), `<table>_categories`,
-`<table>_vocab` (one row per distinct token of a model), `<table>_counters` and `<table>_hist`
+`<table>_vocab` (one row per distinct token of a model), `<table>_counters`, `<table>_hist`
 (the token histograms of Bernoulli and Complement models; see
-[Incremental training and the variants](#incremental-training-and-the-variants)). They are
+[Incremental training and the variants](#incremental-training-and-the-variants)), and
+`<table>_journal` and `<table>_folded`, used only by models in the deferred
+[histogram mode](#histogram-modes-sql-complement). They are
 created on first use like the main table; with `AutoCreateTable="false"`, take the DDL from
 `getCreateTokenTableSql($driver)`. Training is a set of atomic upserts inside one transaction,
 so many processes may train at once ([Concurrency](#concurrency)). Every write takes its locks in
