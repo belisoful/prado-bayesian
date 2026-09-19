@@ -11,6 +11,7 @@
 namespace Belisoful\Prado\Util\Bayesian\Storage;
 
 use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
+use Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram;
 use Prado\Exceptions\TConfigurationException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Exceptions\TInvalidOperationException;
@@ -56,7 +57,7 @@ use Redis;
  * @author Brad Anderson <belisoful@icloud.com>
  * @since 0.1.0
  */
-class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
+class TRedisBayesianStorage extends TComponent implements IBayesianHistogramStorage
 {
 	/** The whole model is stored as one JSON string under the model key. */
 	public const MODE_PAYLOAD = 'payload';
@@ -80,19 +81,87 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	private const TOKEN_CHUNK = 1000;
 
 	/**
-	 * @var string Applies one document's token deltas.  KEYS[1] is the token set and KEYS[2..]
-	 * the token hashes; ARGV[1] is the category, then (token, count, docCount) per hash.  Every
-	 * counter is clamped at zero after its increment, and a token that no category's documents
-	 * contain any more after a negative document delta is deleted and leaves the token set.
-	 * Returns how many tokens were new.
+	 * @var string Lua shared by the scripts that touch histograms: `cells(key, families)`
+	 * returns the histogram fields the token stored at `key` counts towards, mirroring
+	 * {@see TBayesianTokenHistogram::contributions()}, and `bump(hist, field, by)` moves one
+	 * field, dropping it when it reaches zero.
 	 */
-	private const TOKEN_DELTA_SCRIPT = <<<'LUA'
+	private const HISTOGRAM_LUA = <<<'LUA'
+		local function cells(key, families)
+			local out = {}
+			if families == '' then
+				return out
+			end
+			local fields = redis.call('HGETALL', key)
+			local counts = {}
+			local docs = {}
+			local global = 0
+			local contained = 0
+			for j = 1, #fields, 2 do
+				local kind = string.sub(fields[j], 1, 1)
+				local cat = string.sub(fields[j], 2)
+				local n = tonumber(fields[j + 1])
+				if n > 0 then
+					if kind == 'c' then
+						counts[cat] = n
+						global = global + n
+					elseif kind == 'd' then
+						docs[cat] = n
+						contained = contained + n
+					end
+				end
+			end
+			if contained <= 0 then
+				return out
+			end
+			if string.find(families, 'd', 1, true) then
+				for cat, n in pairs(docs) do
+					out[#out + 1] = 'd' .. string.format('%d', n) .. ':' .. cat
+				end
+			end
+			if string.find(families, 'g', 1, true) then
+				out[#out + 1] = 'g' .. string.format('%d', global) .. ':'
+			end
+			for cat, n in pairs(counts) do
+				if string.find(families, 'a', 1, true) then
+					out[#out + 1] = 'a' .. string.format('%d', global) .. ':' .. cat
+				end
+				if string.find(families, 'k', 1, true) then
+					out[#out + 1] = 'k' .. string.format('%d', global - n) .. ':' .. cat
+				end
+			end
+			return out
+		end
+		local function bump(hist, field, by)
+			if redis.call('HINCRBY', hist, field, by) <= 0 then
+				redis.call('HDEL', hist, field)
+			end
+		end
+
+		LUA;
+
+	/**
+	 * @var string Applies one document's token deltas.  KEYS[1] is the token set, KEYS[2] the
+	 * histogram hash and KEYS[3..] the token hashes; ARGV[1] is the category, ARGV[2] the
+	 * histogram families to move (empty for none), then (token, count, docCount) per hash.
+	 * Every counter is clamped at zero after its increment, and a token that no category's
+	 * documents contain any more after a negative document delta is deleted and leaves the
+	 * token set.  Each token's histogram cells are taken away before its counts move and given
+	 * back afterwards, in the same script, so the histograms are never out of step with the
+	 * counts.  Returns how many tokens were new.
+	 */
+	private const TOKEN_DELTA_SCRIPT = self::HISTOGRAM_LUA . <<<'LUA'
 		local set = KEYS[1]
+		local hist = KEYS[2]
 		local cat = ARGV[1]
+		local families = ARGV[2]
 		local added = 0
-		for i = 1, #KEYS - 1 do
-			local key = KEYS[i + 1]
-			local base = 1 + (i - 1) * 3
+		for i = 1, #KEYS - 2 do
+			local key = KEYS[i + 2]
+			local base = 2 + (i - 1) * 3
+			for _, field in ipairs(cells(key, families)) do
+				bump(hist, field, -1)
+			end
 			if redis.call('SADD', set, ARGV[base + 1]) == 1 then
 				added = added + 1
 			end
@@ -117,8 +186,38 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 					redis.call('SREM', set, ARGV[base + 1])
 				end
 			end
+			for _, field in ipairs(cells(key, families)) do
+				bump(hist, field, 1)
+			end
 		end
 		return added
+		LUA;
+
+	/**
+	 * @var string Recounts histogram families from every token hash of a model, atomically.
+	 * KEYS[1] is the token set and KEYS[2] the histogram hash; ARGV[1] is the families and
+	 * ARGV[2] the token-key prefix.  Proportional to the vocabulary, so it runs only to migrate
+	 * a model stored before histograms existed, or to repair one.  Returns the cells written.
+	 */
+	private const HISTOGRAM_REBUILD_SCRIPT = self::HISTOGRAM_LUA . <<<'LUA'
+		local families = ARGV[1]
+		for _, field in ipairs(redis.call('HKEYS', KEYS[2])) do
+			if string.find(families, string.sub(field, 1, 1), 1, true) then
+				redis.call('HDEL', KEYS[2], field)
+			end
+		end
+		local totals = {}
+		for _, token in ipairs(redis.call('SMEMBERS', KEYS[1])) do
+			for _, field in ipairs(cells(ARGV[2] .. token, families)) do
+				totals[field] = (totals[field] or 0) + 1
+			end
+		end
+		local written = 0
+		for field, n in pairs(totals) do
+			redis.call('HSET', KEYS[2], field, n)
+			written = written + 1
+		end
+		return written
 		LUA;
 
 	/**
@@ -138,15 +237,15 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 
 	/**
 	 * @var string Deletes a per-token model atomically, so a trainer racing the delete cannot
-	 * leave orphan token hashes.  KEYS are the metadata, category, legacy category, token-set
-	 * and index keys; ARGV[1] is the model name and ARGV[2] the token-key prefix.
+	 * leave orphan token hashes.  KEYS are the metadata, category, legacy category, token-set,
+	 * index and histogram keys; ARGV[1] is the model name and ARGV[2] the token-key prefix.
 	 */
 	private const DELETE_SCRIPT = <<<'LUA'
 		local tokens = redis.call('SMEMBERS', KEYS[5])
 		for _, token in ipairs(tokens) do
 			redis.call('DEL', ARGV[2] .. token)
 		end
-		redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5])
+		redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[7])
 		redis.call('SREM', KEYS[6], ARGV[1])
 		return #tokens
 		LUA;
@@ -298,6 +397,17 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 	private function legacyCategoriesKey(string $name): string
 	{
 		return $this->key($name) . self::RESERVED . 'cat';
+	}
+
+	/**
+	 * Returns the key of the hash holding a model's token histograms, one field per cell
+	 * (see {@see TBayesianTokenHistogram::key()}).
+	 * @param string $name The model name.
+	 * @return string The key.
+	 */
+	private function histogramKey(string $name): string
+	{
+		return $this->key($name) . self::RESERVED . 'hist';
 	}
 
 	/**
@@ -481,9 +591,10 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 				$this->legacyCategoriesKey($name),
 				$this->tokenSetKey($name),
 				$this->_indexKey,
+				$this->histogramKey($name),
 				$name,
 				$this->tokenKeyPrefix($name),
-			], 6);
+			], 7);
 			if ($result === false) {
 				throw new TInvalidOperationException('bayesian_storage_redis_write_failed', $key);
 			}
@@ -632,7 +743,8 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 		$staleTokens = $redis->sMembers($tokenSetKey);
 
 		$tx = $redis->multi();
-		$tx->del([$metaKey, $documentsKey, $totalsKey, $this->legacyCategoriesKey($name), $tokenSetKey]);
+		$histogramKey = $this->histogramKey($name);
+		$tx->del([$metaKey, $documentsKey, $totalsKey, $this->legacyCategoriesKey($name), $tokenSetKey, $histogramKey]);
 		if (is_array($staleTokens)) {
 			foreach ($staleTokens as $token) {
 				$tx->del($this->tokenKey($name, (string) $token));
@@ -653,6 +765,9 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 				$tx->hSet($tokenKey, self::tokenField('d', $category), (string) max(0, (int) $stats['docCount']));
 			}
 			$tx->sAdd($tokenSetKey, $token);
+		}
+		foreach (TBayesianTokenHistogram::build($tokens, TBayesianTokenHistogram::families($meta['histograms'] ?? null)) as $field => $count) {
+			$tx->hSet($histogramKey, (string) $field, (string) $count);
 		}
 		$tx->exec();
 		$this->_layoutChecked[$name] = true;
@@ -781,11 +896,21 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 		$this->ensureLayout($name);
 		$encoded = $meta === [] ? null : $this->encodeMeta($meta);
 		$tokenSetKey = $this->tokenSetKey($name);
+		$histogramKey = $this->histogramKey($name);
+		// The histograms to keep are the ones the metadata names: the metadata being written
+		// when there is one, the stored metadata otherwise.  A family the writer names but the
+		// store does not hold yet is recounted after the write rather than moved; two writers
+		// that both find it missing both recount, which is idempotent.
+		$families = $meta === [] ? null : TBayesianTokenHistogram::families($meta['histograms'] ?? null);
+		$stored = $families === [] ? [] : TBayesianTokenHistogram::families(($this->readMeta($name) ?? [])['histograms'] ?? null);
+		$families ??= $stored;
+		$rebuild = array_diff($families, $stored) !== [];
+		$moved = $rebuild ? '' : implode('', $families);
 
 		$tx = $redis->multi();
 		foreach (array_chunk($tokenDeltas, self::TOKEN_CHUNK, true) as $chunk) {
-			$keys = [$tokenSetKey];
-			$args = [$category];
+			$keys = [$tokenSetKey, $histogramKey];
+			$args = [$category, $moved];
 			foreach ($chunk as $token => $delta) {
 				$token = (string) $token;
 				$keys[] = $this->tokenKey($name, $token);
@@ -802,10 +927,61 @@ class TRedisBayesianStorage extends TComponent implements IBayesianTokenStorage
 			(string) (int) ($categoryStats['documentCount'] ?? 0),
 			(string) (int) ($categoryStats['totalTokens'] ?? 0),
 		], 2);
+		if ($rebuild) {
+			$tx->eval(self::HISTOGRAM_REBUILD_SCRIPT, [$tokenSetKey, $histogramKey, implode('', $families), $this->tokenKeyPrefix($name)], 2);
+		}
 		$tx->sAdd($this->_indexKey, $name);
 		if ($encoded !== null) {
 			$tx->set($this->key($name), $encoded);
 		}
+		$tx->exec();
+	}
+
+	/**
+	 * Returns a model's stored histograms of the given families.
+	 * @param string $name The model name.
+	 * @param string[] $families The family letters wanted.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @return array<string, array<string, array<int, int>>> The histograms, as family =>
+	 * category => value => token count.
+	 * @since 0.2.0
+	 */
+	public function loadTokenHistograms(string $name, array $families): array
+	{
+		$redis = $this->requireTokenMode();
+		$families = TBayesianTokenHistogram::families($families);
+		if ($families === []) {
+			return [];
+		}
+		$fields = $redis->hGetAll($this->histogramKey($name));
+		$expanded = TBayesianTokenHistogram::expand(is_array($fields) ? $fields : []);
+		return array_intersect_key($expanded, array_fill_keys($families, true));
+	}
+
+	/**
+	 * Recounts histogram families from the model's token hashes in one atomic script, and adds
+	 * them to the families the model's metadata names.  The script walks every token of the
+	 * model, so Redis serves nothing else while it runs: it is for migrating a model stored
+	 * before histograms existed, or repairing one, not for routine use.
+	 * @param string $name The model name.
+	 * @param string[] $families The family letters to build.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TInvalidDataValueException When the model's layout is newer than this release reads.
+	 * @since 0.2.0
+	 */
+	public function rebuildTokenHistograms(string $name, array $families): void
+	{
+		$redis = $this->requireTokenMode();
+		$this->ensureLayout($name);
+		$meta = $this->readMeta($name);
+		if ($meta === null) {
+			return;
+		}
+		$families = TBayesianTokenHistogram::families(array_merge($families, TBayesianTokenHistogram::families($meta['histograms'] ?? null)));
+		$meta['histograms'] = $families;
+		$tx = $redis->multi();
+		$tx->eval(self::HISTOGRAM_REBUILD_SCRIPT, [$this->tokenSetKey($name), $this->histogramKey($name), implode('', $families), $this->tokenKeyPrefix($name)], 2);
+		$tx->set($this->key($name), $this->encodeMeta($meta));
 		$tx->exec();
 	}
 

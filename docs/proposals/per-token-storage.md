@@ -5,10 +5,11 @@ including the Bernoulli/Complement optimizations of Phase 1, incremental trainin
 blob-to-per-token converter (`TBayesianModelConverter`). Since 0.2.0 the incremental write path
 is an atomic increment in the store (the last open question below), so several processes may
 train one model at once. This document is kept as the design record; the shipped behaviour is
-documented in [storage.md](../storage.md). Still open: the file backend deliberately does not
-get a per-token mode (use SQLite through `TSqlBayesianStorage` instead), and the Bernoulli and
-Complement aggregates are not yet recomputed inside the store, so those variants are not
-incrementally trainable per token.
+documented in [storage.md](../storage.md). The Bernoulli and Complement aggregates are computed
+from token histograms the store keeps current with every write (`IBayesianHistogramStorage`), so
+all variants train incrementally per token; that replaces the "cached aggregates need a locking
+or regeneration story" question below. Still open: the file backend deliberately does not get a
+per-token mode (use SQLite through `TSqlBayesianStorage` instead).
 
 Today every backend serializes a model to one JSON payload and `load()` decodes all of it before
 the first classification. This proposal adds an *optional* second storage mode in which a

@@ -97,8 +97,9 @@ interface IBayesianTokenStorage extends IBayesianStorage
 	 * in-store increment inside one atomic unit: several processes applying deltas to one
 	 * model at once must all land, and a half-applied document must not be possible.
 	 *
-	 * Negative deltas are accepted and clamped at zero (what removing a document needs); the
-	 * vocabulary never shrinks.  The model's document total and vocabulary size are derived by
+	 * Negative deltas are accepted and clamped at zero (what removing a document needs), and a
+	 * token that no category's documents contain any more leaves the vocabulary.  The model's
+	 * document total and vocabulary size are derived by
 	 * the implementation from what it stores — the vocabulary growth from the tokens the call
 	 * really added — so the `totalDocuments` and `vocabularySize` keys of `$meta` are ignored,
 	 * and {@see loadTokenMeta()} returns the derived values.  An empty `$meta` leaves the

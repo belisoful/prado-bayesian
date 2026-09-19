@@ -37,7 +37,7 @@ bayesian_recommender_category_unknown	= Bayesian recommender positive category '
 bayesian_vocabulary_full_scan_unavailable	= Bayesian vocabulary for model '{0}' is storage-backed and cannot be enumerated. Read per token, or load the model into a TBayesianVocabulary.
 bayesian_vocabulary_readonly	= Bayesian vocabulary for model '{0}' is storage-backed and is written through its storage, not directly.
 bayesian_storage_token_mode_required	= Bayesian storage is not configured for per-token lookup. Set Mode="token" on the storage, or use a classifier backed by whole-payload storage.
-bayesian_classifier_aggregate_missing	= Bayesian model '{0}' is missing the '{1}' aggregate its classifier needs, and a storage-backed vocabulary cannot recompute it. Re-save the model with the classifier that trained it.
+bayesian_classifier_aggregate_missing	= Bayesian model '{0}' is missing the '{1}' aggregate its classifier needs, and its per-token storage keeps no token histograms to compute it from. Use a storage implementing IBayesianHistogramStorage, or re-save the model from a resident vocabulary.
 bayesian_storage_mode_invalid	= Bayesian SQL storage mode '{0}' is invalid. Use 'payload' or 'token'.
 bayesian_classifier_token_mode_payload	= Bayesian model '{0}' is stored per token and cannot be loaded through whole-payload storage. Set Mode="token" on the storage that reads it.
 bayesian_classifier_id_unknown	= Bayesian module has no classifier with id '{0}'. Configured ids: {1}.

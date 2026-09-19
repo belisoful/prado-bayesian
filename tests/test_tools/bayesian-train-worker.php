@@ -5,7 +5,7 @@
  * concurrency tests.  Several of these run at once against one model; the tests then assert
  * that every count is exact.
  *
- *     php bayesian-train-worker.php <storage-json> <model> <category> <documents-json>
+ *     php bayesian-train-worker.php <storage-json> <model> <category> <documents-json> [classifier-class]
  *
  * `storage-json` is `{"backend":"sql","dsn":...,"user":...,"password":...,"table":...}` or
  * `{"backend":"redis","prefix":...,"index":...}`.  Exits non-zero on any failure so the test
@@ -20,7 +20,7 @@ use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 use Belisoful\Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 
-[, $storageJson, $model, $category, $documentsJson] = $argv + [null, '', '', '', '[]'];
+[, $storageJson, $model, $category, $documentsJson, $classifierClass] = $argv + [null, '', '', '', '[]', TNaiveBayesClassifier::class];
 $config = json_decode((string) $storageJson, true);
 $documents = json_decode((string) $documentsJson, true);
 if (!is_array($config) || !is_array($documents) || $model === '' || $category === '') {
@@ -41,7 +41,11 @@ if (($config['backend'] ?? '') === 'redis') {
 }
 $storage->setMode('token');
 
-$classifier = new TNaiveBayesClassifier();
+if (!is_a($classifierClass, TNaiveBayesClassifier::class, true)) {
+	fwrite(STDERR, "not a classifier class: {$classifierClass}\n");
+	exit(2);
+}
+$classifier = new $classifierClass();
 $classifier->setStorage($storage);
 $classifier->load($model);
 foreach ($documents as $document) {

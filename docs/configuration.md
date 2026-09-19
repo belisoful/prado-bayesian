@@ -371,7 +371,7 @@ All codes live in `config/errorMessages.txt` and are registered system-wide via
 | `bayesian_classifier_token_mode_payload` | A model stored per token was read through the whole-payload path |
 | `bayesian_vocabulary_full_scan_unavailable` | The whole vocabulary was requested from a storage-backed model, or such a model was asked to save itself |
 | `bayesian_vocabulary_readonly` | A storage-backed vocabulary was mutated directly instead of through the classifier |
-| `bayesian_classifier_aggregate_missing` | A Bernoulli or Complement model is storage-backed and its full-scan aggregate was neither stored nor recomputable (see [Storage → Incremental training and the variants](storage.md#incremental-training-and-the-variants)) |
+| `bayesian_classifier_aggregate_missing` | A Bernoulli or Complement model is storage-backed, its storage keeps no token histograms (it does not implement `IBayesianHistogramStorage`), and the aggregate was not stored with the model either (see [Storage → Incremental training and the variants](storage.md#incremental-training-and-the-variants)) |
 | `bayesian_storage_layout_unsupported` | A per-token model's `layoutVersion` is newer than this release reads |
 
 ### Model conversion

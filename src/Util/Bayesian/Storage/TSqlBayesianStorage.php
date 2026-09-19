@@ -11,6 +11,7 @@
 namespace Belisoful\Prado\Util\Bayesian\Storage;
 
 use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
+use Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram;
 use Prado\Data\IDataConnection;
 use Prado\Data\TDbConnection;
 use Prado\Data\TDbPropertiesTrait;
@@ -58,6 +59,12 @@ use Prado\TComponent;
  * so any number of web requests and background workers may train one model at once without
  * losing counts.  That is the mode to use when training happens from concurrent requests.
  *
+ * A model whose metadata names histogram families (`histograms`, written by the Bernoulli and
+ * Complement classifiers) also keeps those {@see TBayesianTokenHistogram} histograms in a
+ * `_hist` table, moved inside the same transaction as the counts.  Such a write first locks the
+ * model's counters row, so training writes to one such model run one after another — each is a
+ * few statements — while models without histograms are written as concurrently as before.
+ *
  * The per-token layout carries a `layoutVersion` in the model's metadata row.  A model written
  * by 0.1.0 (layout 1) is upgraded in place on first read; a layout newer than this release
  * understands is refused with `bayesian_storage_layout_unsupported` rather than misread.
@@ -97,7 +104,7 @@ use Prado\TComponent;
  * @author Brad Anderson <belisoful@icloud.com>
  * @since 0.1.0
  */
-class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
+class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorage
 {
 	use TDbPropertiesTrait {
 		getDbConnection as private getTraitDbConnection;
@@ -424,6 +431,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 		$categories = $this->_table . '_categories';
 		$vocabulary = $this->_table . '_vocab';
 		$counters = $this->_table . '_counters';
+		$histograms = $this->_table . '_hist';
 		// MySQL has no CREATE INDEX IF NOT EXISTS; it declares the lookup index inline instead.
 		$inlineIndex = $driver === 'mysql' ? sprintf(', INDEX %s_lookup (model, token)', $tokens) : '';
 		$statements = [
@@ -461,6 +469,18 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 			'CREATE TABLE IF NOT EXISTS %s (model %s NOT NULL PRIMARY KEY, vocabulary_size %s NOT NULL)',
 			$counters,
 			$key,
+			$int
+		);
+		// One row per histogram cell: how many vocabulary tokens share the value `val` in the
+		// family `fam` (see TBayesianTokenHistogram) for a category, or for the model when the
+		// category is empty.
+		$statements[] = sprintf(
+			'CREATE TABLE IF NOT EXISTS %s (model %s NOT NULL, fam CHAR(1) NOT NULL, category %s NOT NULL,'
+				. ' val %s NOT NULL, cnt %s NOT NULL, PRIMARY KEY (model, fam, category, val))',
+			$histograms,
+			$key,
+			$key,
+			$int,
 			$int
 		);
 		return $statements;
@@ -719,6 +739,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 				$this->incrementCategoryRow($name, (string) $category, max(0, (int) $stats['documentCount']), max(0, (int) $stats['totalTokens']));
 			}
 			$this->insertTokenRows($name, $rows);
+			$this->applyHistogramDelta($name, TBayesianTokenHistogram::build($tokens, TBayesianTokenHistogram::families($meta['histograms'] ?? null)));
 			$this->incrementVocabularySize($name, $this->insertVocabulary($name, array_keys(self::encodeTokens(array_keys($tokens)))));
 			$transaction->commit();
 		} catch (\Throwable $e) {
@@ -789,7 +810,20 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 	public function loadTokens(string $name, array $tokens): array
 	{
 		$this->ensureTokenMode();
-		$map = self::encodeTokens($tokens);
+		return $this->selectTokenRows($name, self::encodeTokens($tokens), false);
+	}
+
+	/**
+	 * Reads the rows of the given tokens in every category.
+	 * @param string $name The model name.
+	 * @param array<string, string> $map The tokens, keyed by storage key.
+	 * @param bool $forUpdate Whether to read with row locks, which on MySQL also reads the
+	 * latest committed rows rather than the transaction's snapshot.
+	 * @return array<string, array<string, array{count:int, docCount:int}>> The statistics, keyed by token then category.
+	 */
+	private function selectTokenRows(string $name, array $map, bool $forUpdate): array
+	{
+		$suffix = $forUpdate && $this->getDbConnection()->getDriverName() !== 'sqlite' ? ' FOR UPDATE' : '';
 		$out = [];
 		foreach (array_chunk(array_keys($map), self::TOKEN_CHUNK) as $chunk) {
 			$placeholders = [];
@@ -797,9 +831,10 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 				$placeholders[] = ':t' . $index;
 			}
 			$sql = sprintf(
-				'SELECT token, category, cnt, doccnt FROM %s_tokens WHERE model = :model AND token IN (%s)',
+				'SELECT token, category, cnt, doccnt FROM %s_tokens WHERE model = :model AND token IN (%s)%s',
 				$this->_table,
-				implode(', ', $placeholders)
+				implode(', ', $placeholders),
+				$suffix
 			);
 			$command = $this->getDbConnection()->createCommand($sql);
 			$command->bindValue(':model', $name);
@@ -853,13 +888,31 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 		ksort($rows, SORT_STRING);
 		$documentDelta = (int) ($categoryStats['documentCount'] ?? 0);
 		$tokenDelta = (int) ($categoryStats['totalTokens'] ?? 0);
+		// The histograms to keep are the ones the metadata names: the metadata being written
+		// when there is one, the stored metadata otherwise.  A family the writer names but the
+		// store does not hold yet is rebuilt after the write rather than moved.
+		$families = $meta === [] ? null : TBayesianTokenHistogram::families($meta['histograms'] ?? null);
+		$stored = $families === [] ? [] : $this->storedFamilies($name);
+		$families ??= $stored;
+		$rebuild = array_diff($families, $stored) !== [];
+		$keys = array_combine(array_keys($rows), array_keys($rows));
 		$connection = $this->getDbConnection();
 		$transaction = $connection->beginTransaction();
 		try {
+			$before = [];
+			if ($families !== []) {
+				$this->lockModel($name);
+				$before = $rebuild ? [] : $this->selectTokenRows($name, $keys, true);
+			}
 			$newTokens = $this->insertVocabulary($name, array_keys($rows));
 			$this->incrementTokenRows($name, $category, $rows);
 			$this->incrementCategoryRow($name, $category, $documentDelta, $tokenDelta);
 			$this->incrementVocabularySize($name, $newTokens - $this->pruneVocabulary($name, $rows));
+			if ($rebuild) {
+				$this->rebuildHistogramRows($name, $families);
+			} elseif ($families !== []) {
+				$this->applyHistogramDelta($name, TBayesianTokenHistogram::delta($before, $this->selectTokenRows($name, $keys, true), $families));
+			}
 			if ($encoded !== null) {
 				$this->writeMetaRow($name, $encoded);
 			}
@@ -868,6 +921,197 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 			$transaction->rollBack();
 			throw $e;
 		}
+	}
+
+	/**
+	 * Returns a model's stored histograms of the given families.
+	 * @param string $name The model name.
+	 * @param string[] $families The family letters wanted.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TDbException When the statement fails.
+	 * @return array<string, array<string, array<int, int>>> The histograms, as family =>
+	 * category => value => token count.
+	 * @since 0.2.0
+	 */
+	public function loadTokenHistograms(string $name, array $families): array
+	{
+		$this->ensureTokenMode();
+		$families = TBayesianTokenHistogram::families($families);
+		if ($families === []) {
+			return [];
+		}
+		$placeholders = [];
+		foreach ($families as $index => $_) {
+			$placeholders[] = ':f' . $index;
+		}
+		$command = $this->getDbConnection()->createCommand(sprintf(
+			'SELECT fam, category, val, cnt FROM %s_hist WHERE model = :model AND fam IN (%s) AND cnt > 0',
+			$this->_table,
+			implode(', ', $placeholders)
+		));
+		$command->bindValue(':model', $name);
+		foreach ($families as $index => $family) {
+			$command->bindValue(':f' . $index, $family);
+		}
+		$out = [];
+		foreach ($command->queryAll() as $row) {
+			$out[(string) $row['fam']][(string) $row['category']][(int) $row['val']] = (int) $row['cnt'];
+		}
+		return $out;
+	}
+
+	/**
+	 * Recomputes histogram families from the token rows with grouped queries, so the work
+	 * happens in the database and only the histogram itself comes back.  The families are
+	 * added to the ones the model's metadata already names.
+	 * @param string $name The model name.
+	 * @param string[] $families The family letters to build.
+	 * @throws TInvalidOperationException When the storage is not in per-token mode.
+	 * @throws TInvalidDataValueException When the model's layout is newer than this release reads.
+	 * @throws TDbException When a statement fails.
+	 * @since 0.2.0
+	 */
+	public function rebuildTokenHistograms(string $name, array $families): void
+	{
+		$this->ensureTokenMode();
+		$this->ensureLayout($name);
+		$meta = $this->load($name);
+		if ($meta === null) {
+			return;
+		}
+		$families = TBayesianTokenHistogram::families(array_merge($families, TBayesianTokenHistogram::families($meta['histograms'] ?? null)));
+		$transaction = $this->getDbConnection()->beginTransaction();
+		try {
+			$this->lockModel($name);
+			$this->rebuildHistogramRows($name, $families);
+			// Re-read under the lock: a trainer may have rewritten the metadata meanwhile.
+			$meta = $this->load($name) ?? $meta;
+			$meta['histograms'] = $families;
+			$this->writeMetaRow($name, $this->encodeMeta($meta));
+			$transaction->commit();
+		} catch (\Throwable $e) {
+			$transaction->rollBack();
+			throw $e;
+		}
+	}
+
+	/**
+	 * Returns the histogram families the stored metadata of a model names.
+	 * @param string $name The model name.
+	 * @return string[] The family letters.
+	 */
+	private function storedFamilies(string $name): array
+	{
+		return TBayesianTokenHistogram::families(($this->load($name) ?? [])['histograms'] ?? null);
+	}
+
+	/**
+	 * Takes the model's write lock for the rest of the transaction by touching its counters
+	 * row.  Moving a histogram needs a token's rows in every category to hold still between
+	 * reading and writing them, and one lock per model gives that on every driver without any
+	 * lock-ordering between tokens.
+	 * @param string $name The model name.
+	 */
+	private function lockModel(string $name): void
+	{
+		$this->incrementVocabularySize($name, 0);
+	}
+
+	/**
+	 * Replaces the rows of the given families with a recount from the token rows.  Runs inside
+	 * the caller's transaction, under the model lock.
+	 * @param string $name The model name.
+	 * @param string[] $families The family letters.
+	 */
+	private function rebuildHistogramRows(string $name, array $families): void
+	{
+		$tokens = $this->_table . '_tokens';
+		// The vocabulary is the tokens some document contains; `x` gives each its global count.
+		$vocabulary = sprintf('(SELECT token, SUM(cnt) AS g FROM %s WHERE model = :m1 GROUP BY token HAVING SUM(doccnt) > 0) x', $tokens);
+		$queries = [
+			TBayesianTokenHistogram::FAMILY_DOCUMENTS => sprintf(
+				'SELECT category, doccnt AS val, COUNT(*) AS n FROM %s WHERE model = :m1 AND doccnt > 0 GROUP BY category, doccnt',
+				$tokens
+			),
+			TBayesianTokenHistogram::FAMILY_GLOBAL => sprintf("SELECT '' AS category, x.g AS val, COUNT(*) AS n FROM %s GROUP BY x.g", $vocabulary),
+			TBayesianTokenHistogram::FAMILY_CATEGORY_GLOBAL => sprintf(
+				'SELECT t.category AS category, x.g AS val, COUNT(*) AS n FROM %s t JOIN %s ON x.token = t.token'
+					. ' WHERE t.model = :m2 AND t.cnt > 0 GROUP BY t.category, x.g',
+				$tokens,
+				$vocabulary
+			),
+			TBayesianTokenHistogram::FAMILY_COMPLEMENT => sprintf(
+				'SELECT t.category AS category, x.g - t.cnt AS val, COUNT(*) AS n FROM %s t JOIN %s ON x.token = t.token'
+					. ' WHERE t.model = :m2 AND t.cnt > 0 GROUP BY t.category, x.g - t.cnt',
+				$tokens,
+				$vocabulary
+			),
+		];
+		$flat = [];
+		foreach ($families as $family) {
+			$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s_hist WHERE model = :model AND fam = :fam', $this->_table));
+			$command->bindValue(':model', $name);
+			$command->bindValue(':fam', $family);
+			$command->execute();
+			$sql = $queries[$family];
+			$command = $this->getDbConnection()->createCommand($sql);
+			$command->bindValue(':m1', $name);
+			if (strpos($sql, ':m2') !== false) {
+				$command->bindValue(':m2', $name);
+			}
+			foreach ($command->queryAll() as $row) {
+				$flat[TBayesianTokenHistogram::key($family, (string) $row['category'], (int) $row['val'])] = (int) $row['n'];
+			}
+		}
+		$this->applyHistogramDelta($name, $flat);
+	}
+
+	/**
+	 * Adds increments to histogram cells and removes the cells that reach zero.  The cells are
+	 * written in sorted order so two writers take their row locks in the same sequence.
+	 * @param string $name The model name.
+	 * @param array<string, int> $delta The increments, keyed by {@see TBayesianTokenHistogram::key()}.
+	 */
+	private function applyHistogramDelta(string $name, array $delta): void
+	{
+		$delta = array_filter($delta);
+		if ($delta === []) {
+			return;
+		}
+		ksort($delta, SORT_STRING);
+		$table = $this->_table . '_hist';
+		$update = $this->getDbConnection()->getDriverName() === 'mysql'
+			? 'ON DUPLICATE KEY UPDATE cnt = cnt + VALUES(cnt)'
+			: sprintf('ON CONFLICT (model, fam, category, val) DO UPDATE SET cnt = %s.cnt + excluded.cnt', $table);
+		foreach (array_chunk($delta, self::ROW_CHUNK, true) as $batch) {
+			$values = [];
+			$bind = [];
+			$index = 0;
+			foreach ($batch as $key => $change) {
+				$parts = TBayesianTokenHistogram::parseKey((string) $key);
+				if ($parts === null) {
+					continue;
+				}
+				$values[] = sprintf('(:m%1$d, :f%1$d, :c%1$d, :v%1$d, :n%1$d)', $index);
+				$bind[':m' . $index] = $name;
+				$bind[':f' . $index] = $parts[0];
+				$bind[':c' . $index] = $parts[1];
+				$bind[':v' . $index] = $parts[2];
+				$bind[':n' . $index] = $change;
+				$index++;
+			}
+			if ($values === []) {
+				continue;
+			}
+			$command = $this->getDbConnection()->createCommand(sprintf('INSERT INTO %s (model, fam, category, val, cnt) VALUES %s %s', $table, implode(', ', $values), $update));
+			foreach ($bind as $placeholder => $value) {
+				$command->bindValue($placeholder, $value);
+			}
+			$command->execute();
+		}
+		$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s WHERE model = :model AND cnt <= 0', $table));
+		$command->bindValue(':model', $name);
+		$command->execute();
 	}
 
 	/**
@@ -1272,7 +1516,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianTokenStorage
 	 */
 	private function deleteTokenRows(string $name): void
 	{
-		foreach (['_tokens', '_categories', '_vocab', '_counters'] as $suffix) {
+		foreach (['_tokens', '_categories', '_vocab', '_counters', '_hist'] as $suffix) {
 			$command = $this->getDbConnection()->createCommand(sprintf('DELETE FROM %s%s WHERE model = :model', $this->_table, $suffix));
 			$command->bindValue(':model', $name);
 			$command->execute();

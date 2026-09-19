@@ -7,6 +7,7 @@ use Belisoful\Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
+require_once(__DIR__ . '/../../../test_tools/BayesianVariantIncrementalTests.php');
 
 /**
  * Covers Redis per-token storage.  These need both `ext-redis` and a reachable server, so they
@@ -19,6 +20,8 @@ require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
  */
 class TRedisTokenStorageTest extends PHPUnit\Framework\TestCase
 {
+	use BayesianVariantIncrementalTests;
+
 	/** @var TRedisBayesianStorage[] Storages whose keys must be cleared after the test. */
 	private array $_storages = [];
 
@@ -600,5 +603,15 @@ class TRedisTokenStorageTest extends PHPUnit\Framework\TestCase
 		self::assertSame($resident->getVocabulary()->getVocabularySize(), $reader->getVocabulary()->getVocabularySize(), 'the reader snapshot is unchanged until refreshed');
 		$reader->getVocabulary()->refresh();
 		self::assertSame($resident->getVocabulary()->getVocabularySize() + 1, $reader->getVocabulary()->getVocabularySize());
+	}
+
+	/** Removes a model's histograms and their advertisement, as a store written before they existed. */
+	private function stripHistograms(TRedisBayesianStorage $storage, string $name): void
+	{
+		$redis = $storage->getRedis();
+		$redis->del($storage->getKeyPrefix() . $name . ':__hist');
+		$meta = json_decode((string) $redis->get($storage->getKeyPrefix() . $name), true);
+		unset($meta['histograms']);
+		$redis->set($storage->getKeyPrefix() . $name, json_encode($meta));
 	}
 }

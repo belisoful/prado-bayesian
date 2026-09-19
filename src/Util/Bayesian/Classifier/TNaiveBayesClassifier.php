@@ -20,6 +20,7 @@ use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
 use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
 use Belisoful\Prado\Util\Bayesian\TBayesianTrainingSet;
 use Belisoful\Prado\Util\Bayesian\TBayesianVocabulary;
+use Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
 use Belisoful\Prado\Util\Bayesian\Tokenizer\IBayesianTokenizer;
 use Belisoful\Prado\Util\Bayesian\Tokenizer\TBayesianTokenizerFactory;
@@ -570,6 +571,9 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 			// first trained, as a resident model does.
 			'categoryOrder' => array_map('strval', $this->_vocabulary->getCategoryNames()),
 			'tokenMode' => true,
+			// The histogram families the storage keeps current for this model, so the
+			// aggregates that span the vocabulary can be computed without walking it.
+			'histograms' => $this->getHistogramFamilies(),
 			'aggregates' => $this->exportAggregates(),
 			'calibration' => $this->_calibration?->export(),
 			'extra' => $this->_extra,
@@ -641,6 +645,51 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 		$this->importAggregates(TBayesianPayload::map($meta['aggregates'] ?? null));
 		$this->importCalibrationAndExtra($meta);
 		$this->_name = $name;
+	}
+
+	/**
+	 * Returns the {@see TBayesianTokenHistogram} families this classifier computes its
+	 * likelihood from.  A per-token storage keeps exactly these current for the model.
+	 *
+	 * The base classifier needs none: every term of the multinomial likelihood comes from the
+	 * document's own tokens.
+	 * @return string[] The family letters.
+	 * @since 0.2.0
+	 */
+	protected function getHistogramFamilies(): array
+	{
+		return [];
+	}
+
+	/**
+	 * Returns whether {@see getTokenHistograms()} can answer for the current vocabulary, without
+	 * counting or reading anything.
+	 * @return bool Whether token histograms are available.
+	 * @since 0.2.0
+	 */
+	protected function getHasTokenHistograms(): bool
+	{
+		$vocabulary = $this->_vocabulary;
+		return $vocabulary->getSupportsFullScan()
+			|| ($vocabulary instanceof TLazyBayesianVocabulary && $vocabulary->getSupportsTokenHistograms());
+	}
+
+	/**
+	 * Returns the token histograms of {@see getHistogramFamilies()} for the current vocabulary:
+	 * counted here when the vocabulary is resident, read from the storage when it is not.
+	 * @return ?array<string, array<string, array<int, int>>> The histograms, as family =>
+	 * category => value => token count; null when the vocabulary is storage-backed and its
+	 * storage keeps no histograms.
+	 * @since 0.2.0
+	 */
+	protected function getTokenHistograms(): ?array
+	{
+		$families = $this->getHistogramFamilies();
+		$vocabulary = $this->_vocabulary;
+		if ($vocabulary->getSupportsFullScan()) {
+			return TBayesianTokenHistogram::fromVocabulary($vocabulary, $families);
+		}
+		return $vocabulary instanceof TLazyBayesianVocabulary ? $vocabulary->getTokenHistograms($families) : null;
 	}
 
 	/**

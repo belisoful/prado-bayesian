@@ -111,6 +111,7 @@ The package's `config/` folder holds what PRADO's third-party plugin support rea
 | `TBayesianModelConverter` | `Belisoful\Prado\Util\Bayesian` | Rewrites a whole-payload model into a per-token backend without retraining |
 | `IBayesianTagger` / `TBayesianTagger` | `Belisoful\Prado\Util\Bayesian` | Multi-label tagging: one-versus-rest Naive Bayes over one shared model, an independent probability per label |
 | `TBayesianPayload` | `Belisoful\Prado\Util\Bayesian` | Typed reads out of decoded payloads and configuration arrays |
+| `TBayesianTokenHistogram` | `Belisoful\Prado\Util\Bayesian` | The "count of counts" histograms Bernoulli and Complement sum over instead of walking the vocabulary |
 | `TTemperatureScaling` | `Belisoful\Prado\Util\Bayesian\Calibration` | Calibrates a classifier's scores into probabilities with one fitted temperature |
 | `TPlattScaling` | `Belisoful\Prado\Util\Bayesian\Calibration` | Calibrates a binary decision value (a tagger's per-label log-odds) with a fitted logistic curve |
 | `TFIdf` | `Belisoful\Prado\Util\Bayesian\Math` | Term-frequency × inverse-document-frequency weighting |
@@ -120,6 +121,7 @@ The package's `config/` folder holds what PRADO's third-party plugin support rea
 | `TCalibrationMetrics` | `Belisoful\Prado\Util\Bayesian\Evaluation` | Log loss, Brier score and expected calibration error, to judge a calibration on held-out data |
 | `IBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | The persistence seam for a trained model |
 | `IBayesianTokenStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | A storage backend that also serves a model per token, for models larger than a process |
+| `IBayesianHistogramStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | A per-token backend that also keeps the token histograms, so Bernoulli and Complement train incrementally against it |
 | `TMemoryBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | Process-local in-memory storage (default; no I/O) |
 | `TFileBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | JSON file storage (good for development, small models, single host, single writer) |
 | `TSqlBayesianStorage` | `Belisoful\Prado\Util\Bayesian\Storage` | SQL-backed storage via `TDbConnection` (SQLite, MySQL, PostgreSQL); whole-payload or per-token (`Mode`); per-token training is an atomic increment, safe for concurrent writers; connection through `TDbPropertiesTrait` |

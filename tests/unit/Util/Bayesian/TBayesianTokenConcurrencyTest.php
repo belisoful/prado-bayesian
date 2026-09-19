@@ -1,6 +1,9 @@
 <?php
 
+use Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
+use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
 use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
+use Belisoful\Prado\Util\Bayesian\Storage\IBayesianHistogramStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\IBayesianTokenStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
@@ -33,7 +36,7 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 				$storage->delete('shared');
 				if ($storage instanceof TSqlBayesianStorage) {
 					$connection = $storage->getDbConnection();
-					foreach (['', '_tokens', '_categories', '_vocab', '_counters'] as $suffix) {
+					foreach (['', '_tokens', '_categories', '_vocab', '_counters', '_hist'] as $suffix) {
 						$connection->createCommand('DROP TABLE IF EXISTS ' . $storage->getTable() . $suffix)->execute();
 					}
 				}
@@ -163,5 +166,85 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 		self::assertSame(1 + $trained, $rows['cheap']['spam']['docCount'], $backend . ': the contended token document count');
 		self::assertSame($trained, $rows['shared']['spam']['count']);
 		self::assertSame(self::WORKERS, $rows['common0']['spam']['count']);
+	}
+
+	/**
+	 * @return array<string, array{0:string, 1:class-string<TNaiveBayesClassifier>}> Each backend with each variant.
+	 */
+	public static function variantBackends(): array
+	{
+		$cases = [];
+		foreach (array_keys(self::backends()) as $backend) {
+			foreach (['bernoulli' => TBernoulliNaiveBayes::class, 'complement' => TComplementNaiveBayes::class] as $label => $class) {
+				$cases[$backend . ' ' . $label] = [$backend, $class];
+			}
+		}
+		return $cases;
+	}
+
+	/**
+	 * Bernoulli and Complement keep histograms over the whole vocabulary in the store.  Workers
+	 * training different categories at once all move them, so after the dust settles they must
+	 * equal a rebuild from the token rows, and the model must score exactly as a resident model
+	 * trained on the same documents.
+	 * @dataProvider variantBackends
+	 * @param class-string<TNaiveBayesClassifier> $class
+	 */
+	public function testParallelWorkersKeepTheVariantAggregatesExact(string $backend, string $class): void
+	{
+		[$storage, $description] = $this->storage($backend);
+		self::assertInstanceOf(IBayesianHistogramStorage::class, $storage);
+		$reference = new $class();
+		$seed = new $class();
+		$seed->setStorage($storage);
+		$seed->setName('shared');
+		foreach ([['spam', 'cheap pills'], ['ham', 'team meeting cheap'], ['news', 'election results']] as [$category, $document]) {
+			$seed->trainOne($category, $document);
+			$reference->trainOne($category, $document);
+		}
+		$seed->save();
+
+		$categories = ['spam', 'ham', 'news', 'spam'];
+		$processes = [];
+		$pipes = [];
+		for ($w = 0; $w < self::WORKERS; $w++) {
+			$documents = [];
+			for ($d = 0; $d < self::DOCUMENTS_PER_WORKER; $d++) {
+				// "cheap" and "commonN" are contended across categories; the rest is the worker's own.
+				$documents[] = "cheap cheap shared w{$w}tok{$d} common{$d}";
+				$reference->trainOne($categories[$w], end($documents));
+			}
+			$command = [
+				PHP_BINARY,
+				__DIR__ . '/../../../test_tools/bayesian-train-worker.php',
+				json_encode($description),
+				'shared',
+				$categories[$w],
+				json_encode($documents),
+				$class,
+			];
+			$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $procPipes);
+			self::assertIsResource($process);
+			$processes[$w] = $process;
+			$pipes[$w] = $procPipes;
+		}
+		foreach ($processes as $w => $process) {
+			$stderr = stream_get_contents($pipes[$w][2]);
+			fclose($pipes[$w][1]);
+			fclose($pipes[$w][2]);
+			self::assertSame(0, proc_close($process), "worker {$w} failed: {$stderr}");
+		}
+
+		$reader = new $class();
+		$reader->setStorage($storage);
+		$reader->load('shared');
+		foreach (['cheap pills common3', 'team meeting election', 'shared w1tok2 results', 'nothing known'] as $probe) {
+			self::assertSame($reference->logScores($probe), $reader->logScores($probe), $backend . ' ' . $class . ': ' . $probe);
+		}
+		$families = \Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram::families($storage->loadTokenMeta('shared')['histograms'] ?? null);
+		self::assertNotSame([], $families);
+		$maintained = $storage->loadTokenHistograms('shared', $families);
+		$storage->rebuildTokenHistograms('shared', $families);
+		self::assertEquals($maintained, $storage->loadTokenHistograms('shared', $families), $backend . ': the maintained histograms equal a rebuild');
 	}
 }

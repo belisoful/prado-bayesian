@@ -53,8 +53,9 @@ writer with any number of readers is fine. Use payload mode when training happen
 + delta` in SQL, `HINCRBY` inside a Lua script in Redis — and the model's totals are derived by
 the store from what it holds rather than written from any process's snapshot. Any number of web
 requests and background workers may train one model at once without losing a count; the test
-suite proves it with parallel processes against SQLite, MySQL, PostgreSQL and Redis. This is the
-mode to use when training happens from concurrent requests.
+suite proves it with parallel processes against SQLite, MySQL, PostgreSQL and Redis, for every
+classifier variant — including the vocabulary-wide histograms Bernoulli and Complement score
+from. This is the mode to use when training happens from concurrent requests.
 
 Two things follow for a process holding a per-token model:
 
@@ -73,17 +74,48 @@ model that trained and then untrained a document ends as it would have without i
 
 ### Incremental training and the variants
 
-`TNaiveBayesClassifier` and `TMultinomialNaiveBayes` train incrementally against a per-token
-model without restriction. `TBernoulliNaiveBayes` and `TComplementNaiveBayes` each keep a
-per-category aggregate that is a sum over the whole vocabulary (Bernoulli's absent-token mass,
-Complement's weight norm), which a storage-backed vocabulary cannot recompute. Those aggregates
-are written when a resident model is saved; the first `trainOne()` on a *loaded* per-token
-Bernoulli or Complement model clears them, and every later `classify()` on that model raises
-`bayesian_classifier_aggregate_missing` until the model is re-saved from a resident vocabulary.
-That is deliberate — a stale aggregate would shift every score silently — but it means those two
-variants are not incrementally trainable through per-token storage in this release. Train them
-resident and save, or use the multinomial classifier for models trained from live traffic.
-Recomputing the aggregates inside the store is planned.
+Every classifier trains incrementally against a per-token model: `TNaiveBayesClassifier`,
+`TMultinomialNaiveBayes`, `TBernoulliNaiveBayes` and `TComplementNaiveBayes` alike, from any
+number of processes at once, and a storage-backed model scores exactly — bit for bit — as a
+resident model trained on the same documents.
+
+Bernoulli and Complement need more than the document's own tokens: each keeps a per-category
+aggregate that is a sum over the whole vocabulary (Bernoulli's absent-token mass, Complement's
+weight norm), which a storage-backed vocabulary cannot walk. They do not have to. Each term of
+those sums depends on a token only through a small integer — how many of the category's
+documents contain it, how often it occurs outside the category — so the sum over tokens is a sum
+over the distinct integers, weighted by how many tokens share each one. Those weights are the
+`TBayesianTokenHistogram` histograms, and a storage implementing `IBayesianHistogramStorage`
+(both `TSqlBayesianStorage` and `TRedisBayesianStorage`) keeps them:
+
+- The classifier names the families it needs in the model's metadata (`histograms`: `["d"]` for
+  Bernoulli, `["g","a","k"]` for Complement, none for the multinomial classifiers, whose training
+  writes therefore pay for none).
+- `saveTokenModel()` writes them; `applyDeltas()` moves them in the same atomic unit as the
+  counts. The cells the document's tokens counted towards lose one each, the cells they count
+  towards afterwards gain one. The cost is proportional to the document.
+- A loaded classifier reads them with the model (one small read) and again after each of its own
+  training writes. They are integers and do not depend on alpha.
+
+SQL keeps them in the `<Table>_hist` table. A training write to a model that keeps histograms
+first locks the model's row in `<Table>_counters`, so such writes to one model run one after
+another (each is a handful of statements); models without histograms are written as concurrently
+as before. With `AutoCreateTable="false"`, create the table from
+`getCreateTokenTableSql()`. Redis keeps them in the `<KeyPrefix><name>:__hist` hash and moves
+them inside the same Lua script that moves the token's counts.
+
+A per-token Bernoulli or Complement model stored before histograms existed has none. They are
+built in the store the first time such a model is loaded or trained — grouped queries in SQL, one
+Lua script in Redis — and recorded in the metadata. That rebuild is the one step proportional to
+the model: on Redis it blocks the server while it walks the model's tokens, so migrate a large
+model off-peak by calling
+`rebuildTokenHistograms($name, $families)` yourself. The same call repairs a model whose rows
+were edited by hand.
+
+A third-party `IBayesianTokenStorage` that does not implement `IBayesianHistogramStorage` still
+serves Bernoulli and Complement models saved from a resident vocabulary (the aggregates travel in
+the metadata), but training one incrementally clears them, and the next `classify()` raises
+`bayesian_classifier_aggregate_missing` rather than score with a stale constant.
 
 ## What the classifier stores
 
@@ -278,9 +310,11 @@ suffixes, and PostgreSQL and MySQL cap identifiers at 63/64) and throws
 
 #### Per-token mode
 
-With `Mode="token"` the storage uses five tables: `<table>` for the metadata row,
+With `Mode="token"` the storage uses six tables: `<table>` for the metadata row,
 `<table>_tokens` (one row per model, token and category), `<table>_categories`,
-`<table>_vocab` (one row per distinct token of a model) and `<table>_counters`. They are
+`<table>_vocab` (one row per distinct token of a model), `<table>_counters` and `<table>_hist`
+(the token histograms of Bernoulli and Complement models; see
+[Incremental training and the variants](#incremental-training-and-the-variants)). They are
 created on first use like the main table; with `AutoCreateTable="false"`, take the DDL from
 `getCreateTokenTableSql($driver)`. Training is a set of atomic upserts inside one transaction,
 so many processes may train at once ([Concurrency](#concurrency)); tokens are written in sorted
@@ -330,7 +364,8 @@ Two applications sharing one Redis must set both `KeyPrefix` and `IndexKey`: the
 names is a key of its own and does not follow the prefix.
 
 Like the SQL backend, it can also store a model **per token** (`Mode="token"`): a metadata
-string, two category hashes, a token set, and one hash per token, with the document's tokens
+string, two category hashes, a token set, one hash per token, and for Bernoulli and Complement
+models a histogram hash, with the document's tokens
 read back in a single pipelined round trip. Training is one `MULTI` of Lua scripts applying
 `HINCRBY` increments, so a document's counts land atomically and any number of processes may
 train at once ([Concurrency](#concurrency)); the vocabulary size is the cardinality of the token

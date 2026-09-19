@@ -68,6 +68,14 @@ Static, typed reads out of decoded JSON and configuration arrays: `int()`, `floa
 `bool()`, `map()`, `list()`, `intMap()`, `floatMap()`, `stringList()`, `formatFloat()`. A value
 of the wrong shape becomes the default rather than a notice or a wrong cast.
 
+### `TBayesianTokenHistogram`
+
+Static helpers for the "count of counts" histograms that Bernoulli and Complement Naive Bayes
+sum over instead of walking the vocabulary: `families()`, `key()` / `parseKey()`,
+`contributions()` (the cells one token counts towards), `delta()` (what a write changes),
+`build()`, `fromVocabulary()`, `expand()` / `flatten()`, `complementCounts()`. See
+[Storage → Incremental training and the variants](storage.md#incremental-training-and-the-variants).
+
 ### `IBayesianRecommender` / `TBayesianRecommender` — *`TComponent`*
 
 Ranks candidate items by the probability of a positive interaction. See
@@ -423,7 +431,8 @@ probability map per example (as `score()` returns) and its true category.
 
 Covered in full on its own page: [Storage backends](storage.md).
 
-`IBayesianStorage` and `IBayesianTokenStorage`, `TMemoryBayesianStorage`,
+`IBayesianStorage`, `IBayesianTokenStorage` and `IBayesianHistogramStorage` (`loadTokenHistograms()`,
+`rebuildTokenHistograms()`), `TMemoryBayesianStorage`,
 `TFileBayesianStorage` (`FileMode`, `DirectoryMode`), `TSqlBayesianStorage` (whole-payload or
 per-token via `Mode`, connection configured through `TDbPropertiesTrait`, `TOKEN_LAYOUT_VERSION`),
 `TRedisBayesianStorage` (whole-payload or per-token via `Mode`, `TOKEN_LAYOUT_VERSION`). In

@@ -37,5 +37,7 @@
 	"TBayesianTagger": "Belisoful\\Prado\\Util\\Bayesian\\TBayesianTagger",
 	"TTemperatureScaling": "Belisoful\\Prado\\Util\\Bayesian\\Calibration\\TTemperatureScaling",
 	"TPlattScaling": "Belisoful\\Prado\\Util\\Bayesian\\Calibration\\TPlattScaling",
-	"TCalibrationMetrics": "Belisoful\\Prado\\Util\\Bayesian\\Evaluation\\TCalibrationMetrics"
+	"TCalibrationMetrics": "Belisoful\\Prado\\Util\\Bayesian\\Evaluation\\TCalibrationMetrics",
+	"TBayesianTokenHistogram": "Belisoful\\Prado\\Util\\Bayesian\\TBayesianTokenHistogram",
+	"IBayesianHistogramStorage": "Belisoful\\Prado\\Util\\Bayesian\\Storage\\IBayesianHistogramStorage"
 }

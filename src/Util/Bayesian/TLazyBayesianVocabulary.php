@@ -10,6 +10,7 @@
 
 namespace Belisoful\Prado\Util\Bayesian;
 
+use Belisoful\Prado\Util\Bayesian\Storage\IBayesianHistogramStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\IBayesianTokenStorage;
 use Prado\Exceptions\TInvalidOperationException;
 
@@ -29,10 +30,11 @@ use Prado\Exceptions\TInvalidOperationException;
  *
  * What this class will not do is pretend to a completeness it does not have.  There is no way
  * to enumerate the vocabulary, so {@see getDocumentFrequency()} throws rather than returning
- * the prefetched slice, {@see getSupportsFullScan()} answers false, and the classifier
- * aggregates that need a full pass — Bernoulli's absent-token mass, Complement's weight norms —
- * are read from the model's stored metadata rather than recomputed.  A caller that needs the
- * whole model should load it into a {@see TBayesianVocabulary} instead.
+ * the prefetched slice and {@see getSupportsFullScan()} answers false.  The classifier
+ * aggregates that sum over the whole vocabulary — Bernoulli's absent-token mass, Complement's
+ * weight norms — are computed from the {@see TBayesianTokenHistogram} histograms the storage
+ * keeps ({@see getTokenHistograms()}), which a training write moves along with the counts.  A
+ * caller that needs the whole model should load it into a {@see TBayesianVocabulary} instead.
  *
  * @author Brad Anderson <belisoful@icloud.com>
  * @since 0.1.0
@@ -71,6 +73,12 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 
 	/** @var array<string, mixed> The model metadata as last read from storage. */
 	private array $_meta = [];
+
+	/**
+	 * @var array<string, array<string, array<string, array<int, int>>>> The histograms read for
+	 * the current generation, keyed by the family list they were read for.
+	 */
+	private array $_histograms = [];
 
 	/** @var int The most tokens the batch holds before it is started afresh. */
 	private int $_maxBatchTokens = self::DEFAULT_MAX_BATCH_TOKENS;
@@ -132,6 +140,7 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 		}
 		$this->_batch = [];
 		$this->_fetched = [];
+		$this->_histograms = [];
 		$this->_generation++;
 	}
 
@@ -147,6 +156,48 @@ class TLazyBayesianVocabulary implements IBayesianVocabulary
 	public function refresh(): void
 	{
 		$this->initialize($this->_storage->loadTokenMeta($this->_model) ?? [], $this->_storage->loadTokenCategories($this->_model));
+	}
+
+	/**
+	 * Returns whether the storage behind this vocabulary keeps token histograms.
+	 * @return bool Whether {@see getTokenHistograms()} can answer.
+	 * @since 0.2.0
+	 */
+	public function getSupportsTokenHistograms(): bool
+	{
+		return $this->_storage instanceof IBayesianHistogramStorage;
+	}
+
+	/**
+	 * Returns the model's token histograms of the given families, read from the storage once
+	 * per loaded state — they are re-read after {@see refresh()}, and so after every training
+	 * write made through this vocabulary.
+	 *
+	 * A model whose metadata does not name the families yet (one stored before histograms
+	 * existed) has them built in the store first, which is the one step here proportional to
+	 * the model and happens once per model.
+	 * @param string[] $families The family letters wanted.
+	 * @return ?array<string, array<string, array<int, int>>> The histograms, as family =>
+	 * category => value => token count; null when the storage keeps none.
+	 * @since 0.2.0
+	 */
+	public function getTokenHistograms(array $families): ?array
+	{
+		$storage = $this->_storage;
+		if (!($storage instanceof IBayesianHistogramStorage)) {
+			return null;
+		}
+		$families = TBayesianTokenHistogram::families($families);
+		$cacheKey = implode('', $families);
+		if (!isset($this->_histograms[$cacheKey])) {
+			$kept = TBayesianTokenHistogram::families($this->_meta['histograms'] ?? null);
+			if (array_diff($families, $kept) !== []) {
+				$storage->rebuildTokenHistograms($this->_model, $families);
+				$this->_meta['histograms'] = TBayesianTokenHistogram::families(array_merge($kept, $families));
+			}
+			$this->_histograms[$cacheKey] = $storage->loadTokenHistograms($this->_model, $families);
+		}
+		return $this->_histograms[$cacheKey];
 	}
 
 	/**

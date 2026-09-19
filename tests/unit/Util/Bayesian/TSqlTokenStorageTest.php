@@ -7,6 +7,7 @@ use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
+require_once(__DIR__ . '/../../../test_tools/BayesianVariantIncrementalTests.php');
 
 /**
  * Covers per-token storage: the layout that lets a model outgrow the process scoring against it.
@@ -19,6 +20,8 @@ require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
  */
 class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 {
+	use BayesianVariantIncrementalTests;
+
 	/** @var string[] Files to remove after the test. */
 	private array $_files = [];
 
@@ -680,5 +683,22 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		self::assertSame($resident->getVocabulary()->getVocabularySize(), $reader->getVocabulary()->getVocabularySize(), 'the reader snapshot is unchanged until refreshed');
 		$reader->getVocabulary()->refresh();
 		self::assertSame($resident->getVocabulary()->getVocabularySize() + 1, $reader->getVocabulary()->getVocabularySize());
+	}
+
+	/** Removes a model's histograms and their advertisement, as a store written before they existed. */
+	private function stripHistograms(TSqlBayesianStorage $storage, string $name): void
+	{
+		$connection = $storage->getDbConnection();
+		$command = $connection->createCommand('DELETE FROM ' . $storage->getTable() . '_hist WHERE model = :model');
+		$command->bindValue(':model', $name);
+		$command->execute();
+		$command = $connection->createCommand('SELECT payload FROM ' . $storage->getTable() . ' WHERE name = :name');
+		$command->bindValue(':name', $name);
+		$meta = json_decode((string) $command->queryScalar(), true);
+		unset($meta['histograms']);
+		$command = $connection->createCommand('UPDATE ' . $storage->getTable() . ' SET payload = :payload WHERE name = :name');
+		$command->bindValue(':payload', json_encode($meta));
+		$command->bindValue(':name', $name);
+		$command->execute();
 	}
 }

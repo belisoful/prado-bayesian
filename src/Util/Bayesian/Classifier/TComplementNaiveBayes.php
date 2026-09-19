@@ -13,6 +13,7 @@ namespace Belisoful\Prado\Util\Bayesian\Classifier;
 use Belisoful\Prado\Util\Bayesian\Math\TFIdf;
 use Belisoful\Prado\Util\Bayesian\TBayesianCategory;
 use Belisoful\Prado\Util\Bayesian\TBayesianPayload;
+use Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram;
 use Prado\Exceptions\TInvalidOperationException;
 
 /**
@@ -58,28 +59,49 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 	private ?string $_cacheKey = null;
 
 	/**
+	 * @var null|array<string, array<string, array<int, int>>>|false The token histograms for
+	 * the state in {@see $_cacheKey}: null before they are asked for, false when unavailable.
+	 */
+	private $_histograms;
+
+	/**
 	 * {@inheritDoc}
 	 */
 	protected function onTrainingChanged(): void
 	{
 		$this->_norms = [];
+		$this->_histograms = null;
 		$this->_cacheKey = null;
 	}
 
 	/**
 	 * {@inheritDoc}
+	 * @return string[] The three families a category's complement counts are merged from.
+	 * @since 0.2.0
+	 */
+	protected function getHistogramFamilies(): array
+	{
+		return [
+			TBayesianTokenHistogram::FAMILY_GLOBAL,
+			TBayesianTokenHistogram::FAMILY_CATEGORY_GLOBAL,
+			TBayesianTokenHistogram::FAMILY_COMPLEMENT,
+		];
+	}
+
+	/**
+	 * {@inheritDoc}
 	 *
-	 * Complement's per-category weight norms are L1 sums over the whole vocabulary, so a model
-	 * stored per token has to carry them.  The complement denominator each norm was computed
-	 * against travels too: the norm is only meaningful paired with it.
+	 * Complement's per-category weight norms are L1 sums over the whole vocabulary.  A storage
+	 * that keeps token histograms makes this copy redundant; it travels for a per-token storage
+	 * that does not, where nothing on the read side could rebuild it.
 	 * @return array<string, mixed> The per-category norms and the state they were built for.
 	 */
 	protected function exportAggregates(): array
 	{
 		if (!$this->_vocabulary->getSupportsFullScan()) {
-			// Training incrementally against storage: the aggregates cannot be recomputed
-			// here, and writing stale ones would be worse than writing none.  Omitting them
-			// makes the next score say so instead of quietly using the wrong constant.
+			// Training incrementally against storage: the norms written at the last full save
+			// are stale now, and writing stale ones would be worse than writing none.  A reader
+			// computes them from the storage's histograms, or reports them missing.
 			return [];
 		}
 		$this->ensureFresh();
@@ -98,12 +120,18 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 	/**
 	 * {@inheritDoc}
 	 *
-	 * Accepts the stored norms only if they were built with the alpha now in force.
+	 * Accepts the stored norms only when the histograms they would otherwise be computed from
+	 * are unavailable, and only if they were built with the alpha now in force.
 	 * @param array<string, mixed> $aggregates The stored aggregates.
 	 */
 	protected function importAggregates(array $aggregates): void
 	{
 		$norms = $aggregates['norms'] ?? null;
+		if ($this->getHasTokenHistograms()) {
+			// The histograms are current with every write; a stored norm is only as fresh as
+			// the last full save.
+			return;
+		}
 		if (!is_array($norms) || TBayesianPayload::float($aggregates['alpha'] ?? null) !== $this->_alpha) {
 			return;
 		}
@@ -147,6 +175,7 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 		$key = $this->cacheKey();
 		if ($this->_cacheKey !== $key) {
 			$this->_norms = [];
+			$this->_histograms = null;
 			$this->_cacheKey = $key;
 		}
 	}
@@ -166,18 +195,21 @@ class TComplementNaiveBayes extends TNaiveBayesClassifier
 		if (isset($this->_norms[$name])) {
 			return (float) $this->_norms[$name];
 		}
-		if (!$this->_vocabulary->getSupportsFullScan()) {
+		$this->_histograms ??= $this->getTokenHistograms() ?? false;
+		if ($this->_histograms === false) {
 			// The norm is an L1 sum over the whole vocabulary; a storage-backed vocabulary
-			// cannot supply that, and it was not restored with the model.
+			// cannot supply that, its storage keeps no histograms, and the norm was not
+			// restored with the model.
 			throw new TInvalidOperationException('bayesian_classifier_aggregate_missing', (string) $this->getName(), 'norm:' . $name);
 		}
+		// A token's weight depends on it only through its complement count, so the sum over the
+		// vocabulary is a sum over the distinct complement counts, each weighted by how many
+		// tokens share it.  Resident and storage-backed vocabularies both arrive here with the
+		// same integers and sum them in the same order, so they score identically.
 		$alpha = $this->_alpha;
-		$categoryCounts = $category->getTokenCounts();
 		$norm = 0.0;
-		foreach ($this->_vocabulary->getDocumentFrequency() as $token => $_) {
-			$token = (string) $token;
-			$complementForToken = $this->_vocabulary->getTokenGlobalCount($token) - ($categoryCounts[$token] ?? 0);
-			$norm += abs(log(($complementForToken + $alpha) / $denominator));
+		foreach (TBayesianTokenHistogram::complementCounts($this->_histograms, $name) as $complementCount => $tokenCount) {
+			$norm += $tokenCount * abs(log(($complementCount + $alpha) / $denominator));
 		}
 		$this->_norms[$name] = $norm;
 		return $norm;
