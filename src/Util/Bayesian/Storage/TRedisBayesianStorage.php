@@ -483,24 +483,6 @@ class TRedisBayesianStorage extends TComponent implements IBayesianHistogramStor
 	}
 
 	/**
-	 * Encodes the model-level metadata for the per-token layout: the totals are dropped (the
-	 * storage derives them from its keys) and the layout version is added.
-	 * @param array<string, mixed> $meta The metadata.
-	 * @throws TInvalidDataValueException When the metadata cannot be JSON-encoded.
-	 * @return string The JSON.
-	 */
-	private function encodeMeta(array $meta): string
-	{
-		unset($meta['totalDocuments'], $meta['vocabularySize']);
-		$meta['layoutVersion'] = self::TOKEN_LAYOUT_VERSION;
-		$encoded = json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-		if ($encoded === false) {
-			throw new TInvalidDataValueException('bayesian_storage_encode_failed', json_last_error_msg());
-		}
-		return $encoded;
-	}
-
-	/**
 	 * Reads and decodes a model's metadata string.
 	 * @param string $name The model name.
 	 * @return ?array<string, mixed> The metadata, or null when absent or not JSON.
@@ -714,7 +696,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianHistogramStor
 		}
 		$tx->del($legacyKey);
 		if ($meta !== null) {
-			$tx->set($this->key($name), $this->encodeMeta($meta));
+			$tx->set($this->key($name), TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION));
 		}
 		$tx->exec();
 	}
@@ -735,7 +717,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianHistogramStor
 	public function saveTokenModel(string $name, array $meta, array $categories, array $tokens): void
 	{
 		$redis = $this->requireTokenMode();
-		$encoded = $this->encodeMeta($meta);
+		$encoded = TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION);
 		$metaKey = $this->key($name);
 		$documentsKey = $this->categoryDocumentsKey($name);
 		$totalsKey = $this->categoryTokensKey($name);
@@ -894,7 +876,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianHistogramStor
 	{
 		$redis = $this->requireTokenMode();
 		$this->ensureLayout($name);
-		$encoded = $meta === [] ? null : $this->encodeMeta($meta);
+		$encoded = $meta === [] ? null : TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION);
 		$tokenSetKey = $this->tokenSetKey($name);
 		$histogramKey = $this->histogramKey($name);
 		// The histograms to keep are the ones the metadata names: the metadata being written
@@ -981,7 +963,7 @@ class TRedisBayesianStorage extends TComponent implements IBayesianHistogramStor
 		$meta['histograms'] = $families;
 		$tx = $redis->multi();
 		$tx->eval(self::HISTOGRAM_REBUILD_SCRIPT, [$this->tokenSetKey($name), $this->histogramKey($name), implode('', $families), $this->tokenKeyPrefix($name)], 2);
-		$tx->set($this->key($name), $this->encodeMeta($meta));
+		$tx->set($this->key($name), TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION));
 		$tx->exec();
 	}
 

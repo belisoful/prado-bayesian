@@ -6,6 +6,7 @@ use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
 use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
 require_once(__DIR__ . '/../../../test_tools/BayesianVariantIncrementalTests.php');
@@ -712,6 +713,7 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 	/**
 	 * Saves the corpus as a Complement model in the given histogram mode and returns a trainer
 	 * loaded from a second, default-configured storage.
+	 * @param string $mode
 	 * @return array{0:TSqlBayesianStorage, 1:TComplementNaiveBayes}
 	 */
 	private function relaxedModel(string $mode): array
@@ -728,10 +730,8 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		return [$storage, $trainer];
 	}
 
-	/**
-	 * @dataProvider relaxedModes
-	 */
-	public function testARelaxedModeLeavesTheHistogramsToMaintenance(string $mode)
+	#[DataProvider('relaxedModes')]
+	public function testARelaxedModeLeavesTheHistogramsToMaintenance(string $mode): void
 	{
 		[$storage, $trainer] = $this->relaxedModel($mode);
 		$families = [TBayesianTokenHistogram::FAMILY_GLOBAL, TBayesianTokenHistogram::FAMILY_CATEGORY_GLOBAL, TBayesianTokenHistogram::FAMILY_COMPLEMENT];

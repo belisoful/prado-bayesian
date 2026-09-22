@@ -1,7 +1,6 @@
 <?php
 
 use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\TBayesianModule;
 use Belisoful\Prado\Util\Bayesian\TBayesianRecommender;
 use Belisoful\Prado\Web\Services\TBayesianService;

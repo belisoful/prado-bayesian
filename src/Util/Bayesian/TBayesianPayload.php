@@ -10,6 +10,8 @@
 
 namespace Belisoful\Prado\Util\Bayesian;
 
+use Prado\Exceptions\TInvalidDataValueException;
+
 /**
  * TBayesianPayload class.
  *
@@ -184,5 +186,28 @@ final class TBayesianPayload
 			}
 		}
 		return $out;
+	}
+
+	/**
+	 * Encodes the model-level metadata of a per-token model as the storages write it.
+	 *
+	 * The document total and vocabulary size are not stored in the metadata: they are counters
+	 * the storage derives from its own rows or keys, and a value from a writer's snapshot would
+	 * be stale the moment another writer trained.  The layout version travels with the metadata
+	 * so a later release can recognize what it is reading.
+	 * @param array<string, mixed> $meta The metadata.
+	 * @param int $layoutVersion The storage's per-token layout version.
+	 * @throws TInvalidDataValueException When the metadata cannot be JSON-encoded.
+	 * @return string The JSON.
+	 */
+	public static function encodeTokenMeta(array $meta, int $layoutVersion): string
+	{
+		unset($meta['totalDocuments'], $meta['vocabularySize']);
+		$meta['layoutVersion'] = $layoutVersion;
+		$encoded = json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+		if ($encoded === false) {
+			throw new TInvalidDataValueException('bayesian_storage_encode_failed', json_last_error_msg());
+		}
+		return $encoded;
 	}
 }

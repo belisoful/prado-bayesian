@@ -19,7 +19,6 @@
  * Numbers depend on the machine, the PHP build and the SQLite version; treat them as ratios,
  * not absolutes.  The script needs `ext-pdo` with the SQLite driver and no other backend.
  */
-
 ini_set('memory_limit', '2G');
 
 require_once(__DIR__ . '/../../vendor/autoload.php');

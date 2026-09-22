@@ -7,9 +7,7 @@
 /phpunit.xml      export-ignore
 /tests            export-ignore
 /docs             export-ignore
-/build            export-ignore
 /AGENTS.md        export-ignore
-/CLAUDE.md        export-ignore
 /CONTRIBUTING.md  export-ignore
 /SECURITY.md      export-ignore
 

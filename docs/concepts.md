@@ -47,8 +47,9 @@ document frequency.
 Training is **incremental** — there is no separate "fit" step, and calling `trainOne()` again
 later refines the same model — and **reversible**: `untrainOne()` and `untrain()` withdraw a
 document exactly. Whether several processes may train one model at once depends on the storage
-layout; see [Storage → Concurrency](storage.md#concurrency), and note the limitation for
-Bernoulli and Complement models stored per token.
+layout; see [Storage → Concurrency](storage.md#concurrency). All four classifier variants train
+and untrain incrementally through per-token storage; see
+[Storage → Incremental training and the variants](storage.md#incremental-training-and-the-variants).
 
 ### Untraining
 

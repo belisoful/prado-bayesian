@@ -9,7 +9,6 @@
  * run.  The floor is deliberately below the achievable figure: the remainder is defensive
  * guards the public API cannot reach (see README).
  */
-
 $file = $argv[1] ?? '';
 $minimum = (float) ($argv[2] ?? 0);
 if ($file === '' || !is_file($file)) {

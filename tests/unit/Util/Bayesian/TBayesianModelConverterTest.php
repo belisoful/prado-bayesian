@@ -3,7 +3,6 @@
 use Belisoful\Prado\Util\Bayesian\Classifier\TBernoulliNaiveBayes;
 use Belisoful\Prado\Util\Bayesian\Classifier\TComplementNaiveBayes;
 use Belisoful\Prado\Util\Bayesian\Classifier\TNaiveBayesClassifier;
-use Belisoful\Prado\Util\Bayesian\Storage\TFileBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TMemoryBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\TBayesianModelConverter;

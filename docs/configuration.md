@@ -82,6 +82,12 @@ The mapping is mechanical, with one wrinkle worth stating plainly: an **attribut
 `<storage>` are **child elements** and become their own keys next to `'class'`. Inside those
 two, class and properties sit at the same level — there is no nested `'properties'` key.
 
+The one thing the array form cannot express is a per-classifier `<tokenizer>` element: the
+module reads it only from XML, so a classifier configured as an array gets the default
+tokenizer. To use another tokenizer from PHP configuration, construct it and call
+`setTokenizer()` on the classifier after the module is initialised (or configure that classifier
+in XML).
+
 | Element / attribute | Effect |
 | --- | --- |
 | `<classifier>` | The classifier class and its properties. A `TNaiveBayesClassifier` is used when omitted. |
@@ -161,7 +167,7 @@ $module->getClassifiers();           // ['spam' => ..., 'lang' => ...]
 |---|---|---|
 | `id` | `<classifier>` | The key `getClassifier($id)` selects it by |
 | `Model` | `<classifier>` | The storage key this classifier reads and writes |
-| `<tokenizer>` | inside `<classifier>` | The tokenizer to train with; a loaded model brings back its own |
+| `<tokenizer>` | inside `<classifier>` | The tokenizer to train with (XML only; see above); a loaded model brings back its own |
 | `DefaultClassifierID` | `<module>` | Which one `getClassifier()` returns; defaults to the first |
 
 Each configured model is loaded eagerly at boot if the storage already holds it, exactly as the

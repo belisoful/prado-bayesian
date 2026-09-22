@@ -642,28 +642,6 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	}
 
 	/**
-	 * Encodes the model-level metadata for the per-token layout.
-	 *
-	 * The document total and vocabulary size are not stored in the metadata: they are counters
-	 * the storage derives from its own rows, and a value from a writer's snapshot would be stale
-	 * the moment another writer trained.  The layout version travels with the metadata so a
-	 * later release can recognize what it is reading.
-	 * @param array<string, mixed> $meta The metadata.
-	 * @throws TInvalidDataValueException When the metadata cannot be JSON-encoded.
-	 * @return string The JSON.
-	 */
-	private function encodeMeta(array $meta): string
-	{
-		unset($meta['totalDocuments'], $meta['vocabularySize']);
-		$meta['layoutVersion'] = self::TOKEN_LAYOUT_VERSION;
-		$encoded = json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-		if ($encoded === false) {
-			throw new TInvalidDataValueException('bayesian_storage_encode_failed', json_last_error_msg());
-		}
-		return $encoded;
-	}
-
-	/**
 	 * Persists a payload under a model name.
 	 * @param string $name The model name.
 	 * @param array<string, mixed> $payload The payload.
@@ -787,7 +765,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			// storage's mode, and every later writer follows the model.
 			$meta['histogramMode'] = $this->_histogramMode;
 		}
-		$encoded = $this->encodeMeta($meta);
+		$encoded = TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION);
 		$rows = [];
 		foreach ($tokens as $token => $perCategory) {
 			$key = self::encodeToken((string) $token);
@@ -972,7 +950,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 		if ($meta !== [] && $families !== []) {
 			$meta['histogramMode'] = self::storedMode($storedMeta ?? ['histogramMode' => $this->_histogramMode]);
 		}
-		$encoded = $meta === [] ? null : $this->encodeMeta($meta);
+		$encoded = $meta === [] ? null : TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION);
 		$plan = [
 			// The document-count family depends only on the (token, category) rows this write
 			// locks anyway, so it moves from their own transitions.
@@ -1237,7 +1215,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 		// Re-read inside the transaction: a trainer may have rewritten the metadata meanwhile.
 		$meta = $this->load($name) ?? $meta;
 		$meta['histograms'] = $families;
-		$this->writeMetaRow($name, $this->encodeMeta($meta));
+		$this->writeMetaRow($name, TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION));
 		return $cells;
 	}
 
@@ -1381,7 +1359,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 		$meta = $this->load($name) ?? $meta;
 		$meta['histogramMode'] = $mode;
 		$this->transactional(function () use ($name, $families, $meta): void {
-			$this->writeMetaRow($name, $this->encodeMeta($meta));
+			$this->writeMetaRow($name, TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION));
 			if ($families !== []) {
 				$this->rebuildInTransaction($name, $families, $meta);
 			}
@@ -1855,7 +1833,7 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			$command->bindValue(':m2', $name);
 			$command->execute();
 
-			$this->writeMetaRow($name, $this->encodeMeta($meta));
+			$this->writeMetaRow($name, TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION));
 			$transaction->commit();
 		} catch (\Throwable $e) {
 			$transaction->rollBack();

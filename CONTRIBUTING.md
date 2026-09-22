@@ -18,16 +18,17 @@ locally; `ext-redis` and the server-backed drivers are optional (below).
 ## The full check
 
 Every change must pass the full check before it is proposed. It runs, in order, `php -l` over
-`src/` and `tests/`, php-cs-fixer in dry-run mode, PHPStan at the level in `phpstan.neon.dist`,
-and the unit suite:
+`src/` and `tests/`, php-cs-fixer in dry-run mode over `src/` and `tests/`, PHPStan over `src/`
+at the level in `phpstan.neon.dist` (analysed for every PHP version from 8.1 to 8.5), and the
+unit suite, which fails on any deprecation, notice or warning:
 
 ```sh
 composer fulltest
 ```
 
 The individual steps are `composer lint`, `composer cs`, `composer stan` and `composer unittest`;
-`composer fix` applies the code style. CI runs exactly these scripts, so a green `fulltest` is a
-green build.
+`composer fix` applies the code style. CI runs the same four checks (the style and analysis steps
+through the tools directly, for annotated output), so a green `fulltest` is a green build.
 
 Bug fixes come with a failing test first. Tests live under `tests/unit`, one class per source
 class, and cover the typical, edge and failure paths of what they test. Do not change the

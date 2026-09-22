@@ -9,6 +9,9 @@ class TTemperatureScalingTest extends PHPUnit\Framework\TestCase
 	/**
 	 * An overconfident synthetic classifier: it gives the true label a large margin most of
 	 * the time, but is wrong a fixed fraction of the time with the same margin.
+	 * @param float $margin
+	 * @param int $count
+	 * @param float $accuracy
 	 * @return array{0: array<int, array<string, float>>, 1: array<int, string>}
 	 */
 	private function overconfidentSamples(float $margin, int $count, float $accuracy): array

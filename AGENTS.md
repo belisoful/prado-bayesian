@@ -8,7 +8,8 @@
 - **Backend suites**: the SQL/Redis tests skip without a server; see CONTRIBUTING.md for the `BAYESIAN_*` environment variables that enable them (`BAYESIAN_REQUIRE_BACKENDS=1` turns a skip into a failure, as CI does)
 
 ### Linting and Code Analysis
-- **Full check**: `composer fulltest` runs, in order, `composer lint` (`php -l` on src/ and tests/), `composer cs` (php-cs-fixer dry run), `composer stan` (PHPStan level 3, analysed as PHP 8.5) and `composer unittest`
+- **Full check**: `composer fulltest` runs, in order, `composer lint` (`php -l` on src/ and tests/), `composer cs` (php-cs-fixer dry run on src/ and tests/), `composer stan` (PHPStan level 3 on src/, analysed for PHP 8.1 to 8.5) and `composer unittest` (fails on any deprecation, notice or warning)
+- **Other scripts**: `composer coverage` (unit tests with a Clover report), `composer integration` (Composer-extension install check against `../prado.master`), `composer benchmark` (storage figures for docs/storage.md)
 - **PHPStan Analysis**: `composer stan` (`vendor/bin/phpstan analyse --memory-limit=512M`)
 - **PHP CS Fixer (Dry-run)**: `composer cs` (check)
 - **PHP CS Fixer (Fix)**: `composer fix` (apply fixes)

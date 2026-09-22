@@ -10,20 +10,20 @@ The module is designed for three common use cases out of the box:
 - **Tagging** — train documents under any number of labels and get an independent probability for every label (`php` *and* `security`, or nothing).
 - **Recommendation** — score items for a user from observed item/category interactions, ranking by the score of the "likes this" class.
 
-Training is incremental and reversible: `trainOne()` adds a document, `untrainOne()` withdraws it exactly. The raw scores are normalized Naive Bayes log-posteriors — a ranking that sums to one, **not calibrated probabilities**, because Naive Bayes is overconfident by construction. Fit a calibration on held-out documents (`calibrate()`, temperature scaling for a classifier and Platt scaling per label for a tagger) and the scores become probability estimates that are saved with the model; see [Concepts](docs/concepts.md#calibration).
+Training is incremental and reversible: `trainOne()` adds a document, `untrainOne()` withdraws it exactly. The raw scores are normalized Naive Bayes log-posteriors — a ranking that sums to one, **not calibrated probabilities**, because Naive Bayes is overconfident by construction. Fit a calibration on held-out documents (`calibrate()`, temperature scaling for a classifier and Platt scaling per label for a tagger) and the scores become probability estimates that are saved with the model; see [Concepts](https://github.com/belisoful/prado-bayesian/blob/main/docs/concepts.md#calibration).
 
 The classifier, tokenizer, and storage are decoupled, so swapping in a different model family, token strategy, or persistence layer is a one-line configuration change.
 
 ## Documentation
 
-This README is the quick start. Deeper material lives in [`docs/`](docs/README.md):
+This README is the quick start. Deeper material lives in [`docs/`](https://github.com/belisoful/prado-bayesian/blob/main/docs/README.md):
 
 | Page | What it covers |
 |---|---|
-| [Concepts](docs/concepts.md) | The pipeline, the three Naive Bayes event models, smoothing, TF-IDF, log-space arithmetic, tokenization, and evaluation |
-| [Class reference](docs/classes.md) | Every public class and interface by namespace, with its role and public API |
-| [Storage backends](docs/storage.md) | The `IBayesianStorage` contract, the four backends, and how to choose |
-| [Configuration](docs/configuration.md) | Module and service wiring, and the full error-code list |
+| [Concepts](https://github.com/belisoful/prado-bayesian/blob/main/docs/concepts.md) | The pipeline, the three Naive Bayes event models, smoothing, TF-IDF, log-space arithmetic, tokenization, and evaluation |
+| [Class reference](https://github.com/belisoful/prado-bayesian/blob/main/docs/classes.md) | Every public class and interface by namespace, with its role and public API |
+| [Storage backends](https://github.com/belisoful/prado-bayesian/blob/main/docs/storage.md) | The `IBayesianStorage` contract, the four backends, and how to choose |
+| [Configuration](https://github.com/belisoful/prado-bayesian/blob/main/docs/configuration.md) | Module and service wiring, and the full error-code list |
 
 ## Requirements
 
@@ -62,7 +62,7 @@ repository:
         { "type": "composer", "url": "https://asset-packagist.org" }
     ],
     "require": {
-        "belisoful/prado-bayesian": "^0.1"
+        "belisoful/prado-bayesian": "^0.2"
     },
     "minimum-stability": "dev",
     "prefer-stable": true
@@ -89,7 +89,7 @@ The package's `config/` folder holds what PRADO's third-party plugin support rea
 | Class | Namespace | Role |
 |---|---|---|
 | `TBayesianModule` | `Belisoful\Prado\Util\Bayesian` | The `extra.prado.bootstrap` module; owns the configured default classifier |
-| `TBayesianService` | `Belisoful\Prado\Web\Services` | A `TService` exposing classification and recommendation over the PRADO service pipeline (HTTP request); opt-in access control through PRADO authorization rules and permissions |
+| `TBayesianService` | `Belisoful\Prado\Web\Services` | A `TService` exposing classification, recommendation and multi-label tagging over the PRADO service pipeline (HTTP request); opt-in access control through PRADO authorization rules and permissions |
 | `IBayesianClassifier` | `Belisoful\Prado\Util\Bayesian\Classifier` | The classifier contract: `train()`, `trainOne()`, `untrain()`, `untrainOne()`, `classify()`, `score()`, `save()`, `load()` |
 | `TNaiveBayesClassifier` | `Belisoful\Prado\Util\Bayesian\Classifier` | The classic Naive Bayes (multinomial event model with Laplace smoothing) — the default spam filter |
 | `TMultinomialNaiveBayes` | `Belisoful\Prado\Util\Bayesian\Classifier` | Multinomial Naive Bayes; counts token occurrences per category |
@@ -166,9 +166,9 @@ The layers stack cleanly:
 - **Tokenizer** — `IBayesianTokenizer` is the seam between text and features. Default `TWordTokenizer` is good enough for spam filtering; swap in `TNGramTokenizer` for language-agnostic content or `TRegexTokenizer` for structured input.
 - **Vocabulary & categories** — `IBayesianVocabulary` is the statistics the classifier scores against, behind an interface so they need not all be resident: `TBayesianVocabulary` holds the whole model, `TLazyBayesianVocabulary` reads a document's tokens from storage per classification. `TBayesianCategory` represents one class. `TBayesianTrainingSet` is the labeled corpus in training-time form.
 - **Classifiers** — All implement `IBayesianClassifier` and accept any tokenizer + storage. `TNaiveBayesClassifier` is the canonical spam filter and the base class of the other three; `TMultinomialNaiveBayes`, `TBernoulliNaiveBayes`, and `TComplementNaiveBayes` override only the likelihood, so switching event model is a one-line change. Each writes a distinct `kind` marker into its saved model, so several variants can share one storage backend safely.
-- **Storage** — `IBayesianStorage` persists a trained model. `TMemoryBayesianStorage` is the no-I/O default; `TFileBayesianStorage` writes JSON; `TSqlBayesianStorage` uses Prado's `TDbConnection`/`TDbCommand` for SQL-backed persistence (SQLite, MySQL, PostgreSQL), configured through `TDbPropertiesTrait` like any other Prado database component, and can store a model per token (`Mode="token"`) so it is bounded by the database rather than by PHP memory; `TRedisBayesianStorage` scales across processes and hosts via Redis, and like the SQL backend can store a model per token (`Mode="token"`), though there the model lives in Redis's RAM rather than on disk. **Whole-payload storage is single-writer** (a save replaces the model); **per-token storage is multi-writer** (training is an atomic increment), which is what a model trained from concurrent web requests and workers needs. See [Storage → Concurrency](docs/storage.md#concurrency).
+- **Storage** — `IBayesianStorage` persists a trained model. `TMemoryBayesianStorage` is the no-I/O default; `TFileBayesianStorage` writes JSON; `TSqlBayesianStorage` uses Prado's `TDbConnection`/`TDbCommand` for SQL-backed persistence (SQLite, MySQL, PostgreSQL), configured through `TDbPropertiesTrait` like any other Prado database component, and can store a model per token (`Mode="token"`) so it is bounded by the database rather than by PHP memory; `TRedisBayesianStorage` scales across processes and hosts via Redis, and like the SQL backend can store a model per token (`Mode="token"`), though there the model lives in Redis's RAM rather than on disk. **Whole-payload storage is single-writer** (a save replaces the model); **per-token storage is multi-writer** (training is an atomic increment), which is what a model trained from concurrent web requests and workers needs. See [Storage → Concurrency](https://github.com/belisoful/prado-bayesian/blob/main/docs/storage.md#concurrency).
 - **Recommender** — `TBayesianRecommender` reuses the classifier: train it on user/item interactions with a positive and a negative label (`PositiveCategory` defaults to `liked`), then ask it to rank candidate items.
-- **Module & service** — `TBayesianModule` is the `extra.prado.bootstrap` entry point that owns the configured classifiers and storage; one module can hold several models over one backend. `TBayesianService` exposes a classifier and the recommender over the PRADO service pipeline (HTTP), sourcing its classifier from the module.
+- **Module & service** — `TBayesianModule` is the `extra.prado.bootstrap` entry point that owns the configured classifiers and storage; one module can hold several models over one backend. `TBayesianService` exposes a classifier, the recommender and the tagger over the PRADO service pipeline (HTTP), sourcing its classifier from the module.
 
 ## Usage
 
@@ -284,7 +284,7 @@ $module = Prado::getApplication()->getModule('bayesian');
 $label  = $module->getClassifier()->classify($text);
 ```
 
-`TBayesianService` is read-only over HTTP (no training or deletion) and answers with JSON. **It enforces no access control by default** — restrict it with PRADO authorization rules (an `<authorization>` element of the service) or a `TPermissionsManager` before exposing it; see [Configuration → Access control](docs/configuration.md#access-control). With the service id `bayesian`:
+`TBayesianService` is read-only over HTTP (no training or deletion) and answers with JSON. **It enforces no access control by default** — restrict it with PRADO authorization rules (an `<authorization>` element of the service) or a `TPermissionsManager` before exposing it; see [Configuration → Access control](https://github.com/belisoful/prado-bayesian/blob/main/docs/configuration.md#access-control). With the service id `bayesian`:
 
 | Request | Response |
 |---|---|
@@ -356,7 +356,7 @@ costs kilobytes of PHP memory regardless of its size, loading it takes well unde
 where the payload form takes tens of milliseconds and tens of megabytes, and training one
 document writes that document's rows instead of re-serializing the model. The figures, and the
 script that reproduces them on your machine (`composer benchmark`), are in
-[Storage backends](docs/storage.md#model-size-and-memory).
+[Storage backends](https://github.com/belisoful/prado-bayesian/blob/main/docs/storage.md#model-size-and-memory).
 
 The rules of thumb for payload mode: the payload runs **30–40 bytes per token-per-category**,
 because each category stores its own occurrence and document counts for every token it has seen,

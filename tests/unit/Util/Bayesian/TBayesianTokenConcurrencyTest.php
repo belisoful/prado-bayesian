@@ -7,6 +7,7 @@ use Belisoful\Prado\Util\Bayesian\Storage\IBayesianHistogramStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\IBayesianTokenStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TRedisBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
 
@@ -52,6 +53,32 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 	}
 
 	/**
+	 * Starts a worker process with its stdout and stderr merged on one pipe, so a chatty child
+	 * can never fill a pipe nobody reads and block against the reader of the other one.
+	 * @param string[] $command The command line, PHP binary first.
+	 * @return array{0:resource, 1:resource} The process and its output pipe.
+	 */
+	private function startWorker(array $command): array
+	{
+		$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes);
+		self::assertIsResource($process);
+		return [$process, $pipes[1]];
+	}
+
+	/**
+	 * Waits for a worker and asserts that it exited cleanly, quoting its output when it did not.
+	 * @param resource $process The process.
+	 * @param resource $pipe Its output pipe.
+	 * @param string $what The worker, for the failure message.
+	 */
+	private function finishWorker($process, $pipe, string $what): void
+	{
+		$output = stream_get_contents($pipe);
+		fclose($pipe);
+		self::assertSame(0, proc_close($process), "{$what} failed: {$output}");
+	}
+
+	/**
 	 * @return array<string, array{0:string}> The backends to run against.
 	 */
 	public static function backends(): array
@@ -60,6 +87,7 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 	}
 
 	/**
+	 * @param string $backend
 	 * @return array{0:IBayesianTokenStorage, 1:array<string, mixed>} The storage and the worker's description of it.
 	 */
 	private function storage(string $backend): array
@@ -107,9 +135,7 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 		return [$storage, ['backend' => 'sql', 'dsn' => $dsn, 'user' => $user, 'password' => $password, 'table' => $table]];
 	}
 
-	/**
-	 * @dataProvider backends
-	 */
+	#[DataProvider('backends')]
 	public function testParallelWorkersLoseNoCounts(string $backend): void
 	{
 		[$storage, $description] = $this->storage($backend);
@@ -137,16 +163,10 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 				'spam',
 				json_encode($documents),
 			];
-			$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $procPipes);
-			self::assertIsResource($process);
-			$processes[$w] = $process;
-			$pipes[$w] = $procPipes;
+			[$processes[$w], $pipes[$w]] = $this->startWorker($command);
 		}
 		foreach ($processes as $w => $process) {
-			$stderr = stream_get_contents($pipes[$w][2]);
-			fclose($pipes[$w][1]);
-			fclose($pipes[$w][2]);
-			self::assertSame(0, proc_close($process), "worker {$w} failed: {$stderr}");
+			$this->finishWorker($process, $pipes[$w], "worker {$w}");
 		}
 
 		$trained = self::WORKERS * self::DOCUMENTS_PER_WORKER;
@@ -199,9 +219,9 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 	 * training different categories at once all move them, so after the dust settles they must
 	 * equal a rebuild from the token rows, and the model must score exactly as a resident model
 	 * trained on the same documents.
-	 * @dataProvider variantBackends
 	 * @param class-string<TNaiveBayesClassifier> $class
 	 */
+	#[DataProvider('variantBackends')]
 	public function testParallelWorkersKeepTheVariantAggregatesExact(string $backend, string $class): void
 	{
 		[$storage, $description] = $this->storage($backend);
@@ -235,16 +255,10 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 				json_encode($documents),
 				$class,
 			];
-			$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $procPipes);
-			self::assertIsResource($process);
-			$processes[$w] = $process;
-			$pipes[$w] = $procPipes;
+			[$processes[$w], $pipes[$w]] = $this->startWorker($command);
 		}
 		foreach ($processes as $w => $process) {
-			$stderr = stream_get_contents($pipes[$w][2]);
-			fclose($pipes[$w][1]);
-			fclose($pipes[$w][2]);
-			self::assertSame(0, proc_close($process), "worker {$w} failed: {$stderr}");
+			$this->finishWorker($process, $pipes[$w], "worker {$w}");
 		}
 
 		$reader = new $class();
@@ -266,9 +280,9 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 	 * on the same rows, and the model must end exactly where a resident one does.  The
 	 * multinomial classifier runs too: it keeps no histograms, but the vocabulary must still
 	 * shrink by exactly the tokens no document contains any more.
-	 * @dataProvider classifierBackends
 	 * @param class-string<TNaiveBayesClassifier> $class
 	 */
+	#[DataProvider('classifierBackends')]
 	public function testParallelWorkersUntrainingKeepTheVariantAggregatesExact(string $backend, string $class): void
 	{
 		[$storage, $description] = $this->storage($backend);
@@ -304,16 +318,10 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 				$class,
 				'untrain',
 			];
-			$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $procPipes);
-			self::assertIsResource($process);
-			$processes[$w] = $process;
-			$pipes[$w] = $procPipes;
+			[$processes[$w], $pipes[$w]] = $this->startWorker($command);
 		}
 		foreach ($processes as $w => $process) {
-			$stderr = stream_get_contents($pipes[$w][2]);
-			fclose($pipes[$w][1]);
-			fclose($pipes[$w][2]);
-			self::assertSame(0, proc_close($process), "worker {$w} failed: {$stderr}");
+			$this->finishWorker($process, $pipes[$w], "worker {$w}");
 		}
 
 		$reader = new $class();
@@ -350,8 +358,8 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 	 * by side while a fifth process folds (or recounts) continuously.  Whatever the interleaving,
 	 * once training has stopped and maintenance has run, the model scores exactly as a resident
 	 * one, and the histograms equal a recount.
-	 * @dataProvider relaxedBackends
 	 */
+	#[DataProvider('relaxedBackends')]
 	public function testMaintenanceRunningBesideTrainersConvergesExactly(string $backend, string $mode): void
 	{
 		[$storage, $description] = $this->storage($backend);
@@ -369,47 +377,40 @@ class TBayesianTokenConcurrencyTest extends PHPUnit\Framework\TestCase
 
 		$stopFile = sys_get_temp_dir() . '/bayesian-maintain-stop-' . uniqid('', true);
 		$this->_files[] = $stopFile;
-		$maintainer = proc_open(
-			[PHP_BINARY, __DIR__ . '/../../../test_tools/bayesian-maintain-worker.php', json_encode($description), 'shared', $stopFile],
-			[1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-			$maintainerPipes
+		[$maintainer, $maintainerPipe] = $this->startWorker(
+			[PHP_BINARY, __DIR__ . '/../../../test_tools/bayesian-maintain-worker.php', json_encode($description), 'shared', $stopFile]
 		);
-		self::assertIsResource($maintainer);
 
 		$categories = ['spam', 'ham', 'news', 'spam'];
 		$processes = [];
 		$pipes = [];
-		for ($w = 0; $w < self::WORKERS; $w++) {
-			$documents = [];
-			for ($d = 0; $d < self::DOCUMENTS_PER_WORKER; $d++) {
-				$documents[] = "cheap cheap shared w{$w}tok{$d} common{$d}";
-				$reference->trainOne($categories[$w], end($documents));
+		try {
+			for ($w = 0; $w < self::WORKERS; $w++) {
+				$documents = [];
+				for ($d = 0; $d < self::DOCUMENTS_PER_WORKER; $d++) {
+					$documents[] = "cheap cheap shared w{$w}tok{$d} common{$d}";
+					$reference->trainOne($categories[$w], end($documents));
+				}
+				$command = [
+					PHP_BINARY,
+					__DIR__ . '/../../../test_tools/bayesian-train-worker.php',
+					json_encode($description),
+					'shared',
+					$categories[$w],
+					json_encode($documents),
+					TComplementNaiveBayes::class,
+				];
+				[$processes[$w], $pipes[$w]] = $this->startWorker($command);
 			}
-			$command = [
-				PHP_BINARY,
-				__DIR__ . '/../../../test_tools/bayesian-train-worker.php',
-				json_encode($description),
-				'shared',
-				$categories[$w],
-				json_encode($documents),
-				TComplementNaiveBayes::class,
-			];
-			$process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $procPipes);
-			self::assertIsResource($process);
-			$processes[$w] = $process;
-			$pipes[$w] = $procPipes;
+			foreach ($processes as $w => $process) {
+				$this->finishWorker($process, $pipes[$w], "worker {$w}");
+			}
+		} finally {
+			// A failed trainer must not leave the maintainer running to its deadline: the process
+			// resource is released when this frame unwinds, and releasing it waits for the child.
+			touch($stopFile);
 		}
-		foreach ($processes as $w => $process) {
-			$stderr = stream_get_contents($pipes[$w][2]);
-			fclose($pipes[$w][1]);
-			fclose($pipes[$w][2]);
-			self::assertSame(0, proc_close($process), "worker {$w} failed: {$stderr}");
-		}
-		touch($stopFile);
-		$stderr = stream_get_contents($maintainerPipes[2]);
-		fclose($maintainerPipes[1]);
-		fclose($maintainerPipes[2]);
-		self::assertSame(0, proc_close($maintainer), "maintenance worker failed: {$stderr}");
+		$this->finishWorker($maintainer, $maintainerPipe, 'maintenance worker');
 
 		self::assertSame($mode, $storage->loadTokenMeta('shared')['histogramMode'], 'the trainers kept the model in its mode');
 		$storage->maintainTokenHistograms('shared');

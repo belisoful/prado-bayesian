@@ -8,6 +8,16 @@ on:
     - cron: '17 6 * * 1'
   workflow_dispatch:
 
+# The jobs only read the repository; nothing here needs a token that can write.
+permissions:
+  contents: read
+
+# A push to a branch with an open pull request triggers both events; a newer push to the same
+# ref supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   composerext:
     name: Bayesian (PHP ${{ matrix.php-versions }}${{ matrix.dependencies == 'lowest' && ', lowest deps' || '' }})

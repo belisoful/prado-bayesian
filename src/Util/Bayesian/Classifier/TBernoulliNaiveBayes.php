@@ -263,36 +263,6 @@ class TBernoulliNaiveBayes extends TNaiveBayesClassifier
 	/**
 	 * {@inheritDoc}
 	 *
-	 * The Bernoulli model normalizes the log-posteriors in the standard way; the log prior
-	 * is the only non-likelihood term.
-	 * @param string[] $tokens The tokens.
-	 * @return array<string, float> The log-posteriors.
-	 */
-	protected function scoreTokens(array $tokens): array
-	{
-		$categories = $this->_vocabulary->getCategories();
-		if ($categories === []) {
-			return [];
-		}
-		$this->_vocabulary->prefetch($tokens);
-		$totalDocs = $this->_vocabulary->getTotalDocuments();
-		$scores = [];
-		foreach ($categories as $category) {
-			$docCount = $category->getDocumentCount();
-			if ($docCount === 0 || $totalDocs === 0) {
-				$scores[$category->getName()] = -INF;
-				continue;
-			}
-			$logPrior = log($docCount / $totalDocs);
-			$logLikelihood = $this->logLikelihood($tokens, $category, $totalDocs);
-			$scores[$category->getName()] = $logPrior + $logLikelihood;
-		}
-		return $scores;
-	}
-
-	/**
-	 * {@inheritDoc}
-	 *
 	 * Bernoulli NB does not use TF-IDF re-weighting — each token's contribution is binary
 	 * (present or absent).  The saved state still carries the flag for round-trip safety, but
 	 * {@see logLikelihood()} above does not consult it.

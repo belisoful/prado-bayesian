@@ -776,6 +776,7 @@ class TNaiveBayesClassifier extends TComponent implements IBayesianClassifier
 	 * @param array<string, mixed> $payload The payload or per-token metadata.
 	 * @param string $name The model name, for the message.
 	 * @throws TInvalidDataValueException When the payload's `formatVersion` exceeds {@see FORMAT_VERSION}.
+	 * @since 0.2.0
 	 */
 	protected function assertFormatVersion(array $payload, string $name): void
 	{

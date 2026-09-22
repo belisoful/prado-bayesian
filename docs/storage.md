@@ -382,8 +382,10 @@ columns.
 
 The metadata row of a per-token model carries a `layoutVersion` (currently `2`). A model written
 by 0.1.0 (layout 1, which kept the totals in the metadata and had no vocabulary or counters
-tables) is upgraded in place, inside one transaction, the first time it is read — the two extra
-tables are created automatically when `AutoCreateTable` is on; add them yourself otherwise. A
+tables) is upgraded in place, inside one transaction, the first time it is read — the tables
+layout 1 lacked (`<table>_vocab`, `<table>_counters`, `<table>_hist`, `<table>_journal` and
+`<table>_folded`) are created automatically when `AutoCreateTable` is on; with it off, create all
+five from `getCreateTokenTableSql($driver)` before the first read. A
 layout newer than the installed release is refused with `bayesian_storage_layout_unsupported`.
 
 ### `TRedisBayesianStorage`

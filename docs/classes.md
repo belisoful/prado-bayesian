@@ -67,6 +67,8 @@ The tagger's calibrations and any other state live in the classifier's extra sta
 Static, typed reads out of decoded JSON and configuration arrays: `int()`, `float()`, `string()`,
 `bool()`, `map()`, `list()`, `intMap()`, `floatMap()`, `stringList()`, `formatFloat()`. A value
 of the wrong shape becomes the default rather than a notice or a wrong cast.
+`encodeTokenMeta(array $meta, int $layoutVersion)` writes the metadata of a per-token model the
+way both per-token storages store it: without the derived totals, stamped with the layout version.
 
 ### `TBayesianTokenHistogram`
 
@@ -447,7 +449,7 @@ at once; see [Storage → Concurrency](storage.md#concurrency).
 
 ### `TBayesianService` — *extends `TService`*
 
-A read-only JSON HTTP surface over the configured classifier: `classify` and `recommend`. It
+A read-only JSON HTTP surface over the configured classifier: `classify`, `recommend` and `tag`. It
 exposes no training, saving, or deletion, and enforces no access control unless configured to;
 see [Configuration → HTTP service](configuration.md#http-service) before exposing it.
 

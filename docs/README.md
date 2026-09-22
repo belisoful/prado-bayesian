@@ -22,9 +22,10 @@ src/Util/Bayesian/
 ├── Classifier/     IBayesianClassifier and the four classifier classes
 ├── Tokenizer/      IBayesianTokenizer, the tokenizers, the chain, the factory, the shared trait
 ├── Math/           TBayesMath (log-space arithmetic), TFIdf (term weighting)
-├── Evaluation/     TConfusionMatrix, TBayesianMetrics
+├── Evaluation/     TConfusionMatrix, TBayesianMetrics, TCalibrationMetrics
+├── Calibration/    TTemperatureScaling, TPlattScaling (probability calibration)
 ├── Storage/        IBayesianStorage and the four storage backends
-└── *.php           TBayesianModule, TBayesianRecommender, and the training/vocabulary types
+└── *.php           TBayesianModule, TBayesianRecommender, TBayesianTagger, and the training/vocabulary types
 ```
 
 Every class is registered in `config/prado-bayesian-classes.json` under its short name, so
