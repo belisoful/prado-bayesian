@@ -50,7 +50,6 @@
 	},
 	"require-dev": {
 		"friendsofphp/php-cs-fixer": "^3.94",
-		"phpdocumentor/shim": "^3",
 		"phpstan/phpstan": "^2.1.22",
 		"phpunit/phpunit": "^10"
 	},
@@ -60,9 +59,6 @@
 		"sort-packages": true,
 		"platform": {
 			"php": "8.1"
-		},
-		"allow-plugins": {
-			"phpdocumentor/shim": true
 		}
 	},
 	"scripts": {

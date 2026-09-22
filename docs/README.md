@@ -35,13 +35,11 @@ fully-qualified name. See [Configuration](configuration.md#short-class-names).
 ## API documentation
 
 Every public method carries a complete PHPDoc block — description, `@param`, `@return`, and
-`@throws` — so the source doubles as the API reference. `phpdocumentor/shim` is a dev
-dependency; it installs the phpDocumentor PHAR into `vendor/bin/phpdoc` on `composer install`
-(the PHAR is downloaded separately from the Composer package, so it is absent in checkouts
-where that step did not run). With it present:
+`@throws` — so the source doubles as the API reference. To render it, run the
+[phpDocumentor](https://phpdoc.org/) PHAR (not a dependency of this package) over `src/`:
 
 ```bash
-vendor/bin/phpdoc -d src -t docs/api
+php phpDocumentor.phar -d src -t docs/api
 ```
 
 `docs/api/` is generated output: php-cs-fixer already excludes `docs/`, and `.gitignore`
