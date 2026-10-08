@@ -8,6 +8,11 @@ on:
     - cron: '17 6 * * 1'
   workflow_dispatch:
 
+env:
+  # The PHP version the single-version jobs use (coverage, the OS jobs and the Composer
+  # extension install); the framework's workflow pins the same one.
+  PHP_VERSION: '8.2'
+
 # The jobs only read the repository; nothing here needs a token that can write.
 permissions:
   contents: read
@@ -26,12 +31,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php-versions: ['8.1', '8.2', '8.3', '8.4', '8.5']
+        # The framework requires PHP 8.2 since 2026-10-01, so 8.1 can no longer install it.
+        php-versions: ['8.2', '8.3', '8.4', '8.5']
         dependencies: ['highest']
         include:
           # The oldest versions the constraints allow, on the oldest PHP: what a consumer with
           # a conservative lock file gets.
-          - php-versions: '8.1'
+          - php-versions: '8.2'
             dependencies: 'lowest'
 
     services:
@@ -79,38 +85,34 @@ jobs:
       BAYESIAN_PGSQL_USER: postgres
       BAYESIAN_PGSQL_PASSWORD: bayesian
 
-    defaults:
-      run:
-        working-directory: prado-bayesian
-
     steps:
-      - name: Checkout extension
-        uses: actions/checkout@v4
-        with:
-          path: prado-bayesian
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Setup PHP, with composer and extensions
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@v2 #https://github.com/shivammathur/setup-php
         with:
           php-version: ${{ matrix.php-versions }}
           extensions: ctype, dom, intl, json, mbstring, pcre, pdo, pdo_sqlite, pdo_mysql, pdo_pgsql, sqlite3, redis, sockets, spl, zlib
+          # php-cs-fixer and phpstan run from vendor/bin, at the exact versions composer.json
+          # pins, so a tool release cannot change what a build checks.
           tools: cs2pr
           # Xdebug costs a lot of run time, so only the leg that measures coverage gets it.
-          coverage: ${{ matrix.php-versions == '8.3' && matrix.dependencies == 'highest' && 'xdebug' || 'none' }}
+          coverage: ${{ matrix.php-versions == env.PHP_VERSION && matrix.dependencies == 'highest' && 'xdebug' || 'none' }}
 
       - name: Validate composer.json
         run: composer validate --strict
 
       - name: Get composer cache directory
         id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
       - name: Cache dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           # composer.lock is not committed, so the key hashes composer.json instead.
-          key: ${{ runner.os }}-php${{ matrix.php-versions }}-${{ matrix.dependencies }}-composer-${{ hashFiles('**/composer.json') }}
+          key: ${{ runner.os }}-php${{ matrix.php-versions }}-${{ matrix.dependencies }}-composer-${{ hashFiles('composer.json') }}
           restore-keys: ${{ runner.os }}-php${{ matrix.php-versions }}-${{ matrix.dependencies }}-composer-
 
       # pradosoft/prado resolves straight from Packagist (dev-master, aliased 4.4.x-dev); no
@@ -138,7 +140,7 @@ jobs:
         run: composer unittest
 
       - name: Measure coverage
-        if: matrix.php-versions == '8.3' && matrix.dependencies == 'highest'
+        if: matrix.php-versions == env.PHP_VERSION && matrix.dependencies == 'highest'
         env:
           XDEBUG_MODE: coverage
         run: |
@@ -148,18 +150,117 @@ jobs:
           # support it.
           php tests/test_tools/check-coverage.php build/logs/clover.xml 93
 
+  # The OS jobs run the full check where the Linux matrix cannot: a case-insensitive
+  # filesystem, Windows paths and process spawning.  They have SQLite only; the Redis, MySQL
+  # and PostgreSQL suites skip here and are required on the Linux matrix above.
+  macos:
+    name: Bayesian OS (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ctype, dom, intl, json, mbstring, pcre, pdo, pdo_sqlite, sqlite3, sockets, spl, zlib
+          tools: cs2pr
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Compile check (composer lint)
+        run: composer lint
+
+      - name: Validate code style using php-cs-fixer (composer cs)
+        run: vendor/bin/php-cs-fixer fix -vvv --dry-run --using-cache=no --format=checkstyle | cs2pr
+
+      - name: Validate code using phpstan (composer stan)
+        run: vendor/bin/phpstan analyse --memory-limit=512M --error-format=checkstyle | cs2pr
+
+      - name: Run Unit Tests (composer unittest)
+        run: composer unittest
+
+  windows:
+    name: Bayesian OS (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Configure git for LF line endings
+        run: git config --global core.autocrlf false
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ctype, dom, intl, json, mbstring, pcre, pdo, pdo_sqlite, sqlite3, sockets, spl, zlib
+          tools: cs2pr
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+      # Composer runs its scripts through cmd.exe on Windows, where the `composer lint`
+      # pipeline's find and xargs are not the POSIX ones; the same pipeline runs here in bash.
+      - name: Compile check (composer lint)
+        run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -d display_errors=stderr -l > /dev/null
+
+      - name: Validate code style using php-cs-fixer (composer cs)
+        run: vendor/bin/php-cs-fixer fix -vvv --dry-run --using-cache=no --format=checkstyle | cs2pr
+
+      - name: Validate code using phpstan (composer stan)
+        run: vendor/bin/phpstan analyse --memory-limit=512M --error-format=checkstyle | cs2pr
+
+      - name: Run Unit Tests (composer unittest)
+        run: composer unittest
+
   integration:
     name: Composer extension install
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout extension
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: prado-bayesian
 
       - name: Checkout PRADO framework (4.4 dev)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: pradosoft/prado
           ref: master
@@ -168,7 +269,7 @@ jobs:
       - name: Setup PHP, with composer and extensions
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: ${{ env.PHP_VERSION }}
           extensions: ctype, dom, intl, json, mbstring, pcre, pdo, pdo_sqlite, sqlite3, sockets, spl, zlib
 
       # Builds a throwaway consumer project that requires the extension through Composer, then

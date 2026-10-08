@@ -306,6 +306,9 @@ class TFileBayesianStorageTest extends PHPUnit\Framework\TestCase
 		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
 			self::markTestSkipped('root ignores modes');
 		}
+		if (DIRECTORY_SEPARATOR === '\\') {
+			self::markTestSkipped('Windows has no POSIX file modes');
+		}
 		$storage = new TFileBayesianStorage();
 		self::assertSame(0o644, $storage->getFileMode());
 		self::assertSame(0o755, $storage->getDirectoryMode());

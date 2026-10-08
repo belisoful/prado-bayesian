@@ -12,14 +12,14 @@ cd prado-bayesian
 composer install
 ```
 
-PHP 8.1 to 8.5 with `ext-mbstring` (CI runs every version; keep 8.4 and 8.5 deprecation-free). `ext-pdo` with the SQLite driver runs the SQL suite
+PHP 8.2 to 8.5 with `ext-mbstring` (CI runs every version, and the full check on macOS and Windows too; keep 8.4 and 8.5 deprecation-free). `ext-pdo` with the SQLite driver runs the SQL suite
 locally; `ext-redis` and the server-backed drivers are optional (below).
 
 ## The full check
 
 Every change must pass the full check before it is proposed. It runs, in order, `php -l` over
 `src/` and `tests/`, php-cs-fixer in dry-run mode over `src/` and `tests/`, PHPStan over `src/`
-at the level in `phpstan.neon.dist` (analysed for every PHP version from 8.1 to 8.5), and the
+at the level in `phpstan.neon.dist` (analysed for every PHP version from 8.2 to 8.5), and the
 unit suite, which fails on any deprecation, notice or warning:
 
 ```sh
@@ -29,6 +29,8 @@ composer fulltest
 The individual steps are `composer lint`, `composer cs`, `composer stan` and `composer unittest`;
 `composer fix` applies the code style. CI runs the same four checks (the style and analysis steps
 through the tools directly, for annotated output), so a green `fulltest` is a green build.
+`php-cs-fixer` and `phpstan` are pinned to the exact versions the PRADO framework pins, so a
+tool release cannot change what a build checks; Dependabot proposes the bumps.
 
 Bug fixes come with a failing test first. Tests live under `tests/unit`, one class per source
 class, and cover the typical, edge and failure paths of what they test. Do not change the

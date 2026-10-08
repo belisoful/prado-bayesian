@@ -1,7 +1,7 @@
 parameters:
     # Every runtime the package supports: a finding on any version in the range is reported.
     phpVersion:
-        min: 80100
+        min: 80200
         max: 80500
     level: 3
     bootstrapFiles:

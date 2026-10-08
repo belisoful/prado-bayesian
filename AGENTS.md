@@ -8,7 +8,7 @@
 - **Backend suites**: the SQL/Redis tests skip without a server; see CONTRIBUTING.md for the `BAYESIAN_*` environment variables that enable them (`BAYESIAN_REQUIRE_BACKENDS=1` turns a skip into a failure, as CI does)
 
 ### Linting and Code Analysis
-- **Full check**: `composer fulltest` runs, in order, `composer lint` (`php -l` on src/ and tests/), `composer cs` (php-cs-fixer dry run on src/ and tests/), `composer stan` (PHPStan level 3 on src/, analysed for PHP 8.1 to 8.5) and `composer unittest` (fails on any deprecation, notice or warning)
+- **Full check**: `composer fulltest` runs, in order, `composer lint` (`php -l` on src/ and tests/), `composer cs` (php-cs-fixer dry run on src/ and tests/), `composer stan` (PHPStan level 3 on src/, analysed for PHP 8.2 to 8.5) and `composer unittest` (fails on any deprecation, notice or warning)
 - **Other scripts**: `composer coverage` (unit tests with a Clover report), `composer integration` (Composer-extension install check against `../prado.master`), `composer benchmark` (storage figures for docs/storage.md)
 - **PHPStan Analysis**: `composer stan` (`vendor/bin/phpstan analyse --memory-limit=512M`)
 - **PHP CS Fixer (Dry-run)**: `composer cs` (check)
@@ -105,11 +105,11 @@
 - NEVER add/change phpunit command options when unit testing; only run project unit tests as specified
 
 ## Development Environment
-- PHP 8.1 to 8.5 supported; CI runs every version, and 8.4/8.5 must stay deprecation-free (run the suite under them with `--display-deprecations` when touching reflection, casts or string coercion)
+- PHP 8.2 to 8.5 supported (PRADO `master` requires 8.2); CI runs every version on Linux with every backend, plus the full check on macOS and Windows with SQLite only, and 8.4/8.5 must stay deprecation-free (run the suite under them with `--display-deprecations` when touching reflection, casts or string coercion)
 - PHP extensions: ctype, dom, intl, json, mbstring, pcre, spl (typical)
 - Optional extensions for additional features: pdo, redis
 - Composer for dependency management
-- Required developer dependencies for code checking: phpunit/phpunit, phpstan/phpstan, friendsofphp/php-cs-fixer
+- Required developer dependencies for code checking: phpunit/phpunit, phpstan/phpstan, friendsofphp/php-cs-fixer; the latter two are pinned to the exact versions the PRADO framework pins (`.github/dependabot.yml` proposes bumps), so change them only together with the framework
 - Presume that project dependencies are installed
 - `pradosoft/prado` is a runtime requirement at `^4.4@dev`, which resolves straight from Packagist: PRADO's `master` branch is served as `dev-master` and aliased to `4.4.x-dev`, so no framework repository entry is needed — only `minimum-stability` `dev` and `prefer-stable` `true`. No machine-specific path is committed. To work against a local checkout, add a path repository to your working copy without committing it
 

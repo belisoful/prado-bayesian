@@ -40,7 +40,7 @@
 		}
 	],
 	"require": {
-		"php": "^8.1",
+		"php": "^8.2",
 		"ext-mbstring": "*",
 		"pradosoft/prado": "^4.4@dev"
 	},
@@ -49,8 +49,8 @@
 		"ext-redis": "Required by Belisoful\\Prado\\Util\\Bayesian\\Storage\\TRedisBayesianStorage for Redis-backed training persistence."
 	},
 	"require-dev": {
-		"friendsofphp/php-cs-fixer": "^3.94",
-		"phpstan/phpstan": "^2.1.22",
+		"friendsofphp/php-cs-fixer": "3.95.27",
+		"phpstan/phpstan": "2.3.0",
 		"phpunit/phpunit": "^10"
 	},
 	"minimum-stability": "dev",
@@ -58,7 +58,7 @@
 	"config": {
 		"sort-packages": true,
 		"platform": {
-			"php": "8.1"
+			"php": "8.2"
 		}
 	},
 	"scripts": {

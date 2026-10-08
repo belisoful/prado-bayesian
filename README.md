@@ -29,7 +29,7 @@ This README is the quick start. Deeper material lives in [`docs/`](https://githu
 
 | Requirement | Scope | Purpose |
 |---|---|---|
-| PHP 8.1 to 8.5 | required | Language runtime (each version is in CI; 8.4 and 8.5 run deprecation-free) |
+| PHP 8.2 to 8.5 | required | Language runtime (each version is in CI; 8.4 and 8.5 run deprecation-free). PRADO `master` requires 8.2 |
 | `ext-mbstring` | required | Multibyte-safe tokenization (every tokenizer uses `mb_*`) |
 | PRADO Framework `^4.4@dev` | required (Composer installs it) | `TComponent`, `TService`, `TModule`, `TDbPropertiesTrait`, and the `extra.prado.*` Composer plugin hooks |
 | `ext-pdo` | suggested | Required by `TSqlBayesianStorage` (via Prado's `TDbConnection`) for SQL-backed persistence |
@@ -657,7 +657,7 @@ SQL tests skip cleanly when `ext-pdo`/`pdo_sqlite` is unavailable; Redis tests s
 BAYESIAN_PGSQL_DSN="pgsql:host=127.0.0.1;port=5432;dbname=bayesian_test" BAYESIAN_PGSQL_USER=postgres vendor/bin/phpunit --testsuite unit
 ```
 
-CI runs PHP 8.1 through 8.5 (plus a lowest-dependencies leg; 8.4 and 8.5 have also been run locally with deprecations displayed) against Redis, MySQL, and PostgreSQL service containers with `BAYESIAN_REQUIRE_BACKENDS=1`, which turns each of those skips into a failure — so a green build means every backend really ran, rather than quietly skipping. It also runs weekly, because the package tracks PRADO's `master` branch.
+CI follows the framework's own workflow: it runs PHP 8.2 through 8.5 (plus a lowest-dependencies leg; 8.4 and 8.5 have also been run locally with deprecations displayed) against Redis, MySQL, and PostgreSQL service containers with `BAYESIAN_REQUIRE_BACKENDS=1`, which turns each of those skips into a failure — so a green build means every backend really ran, rather than quietly skipping. The full check also runs on macOS and Windows with SQLite only. It runs weekly, because the package tracks PRADO's `master` branch, and Dependabot keeps the GitHub Actions and the pinned analysis tools (`php-cs-fixer`, `phpstan`, at the versions the framework pins) current through pull requests.
 
 Line coverage is ~87% locally with only SQLite available, and higher with Redis, MySQL, and PostgreSQL running (`composer coverage`, needs Xdebug or PCOV; CI enforces a 93% floor). The gap between the two figures is almost entirely the Redis backend, which cannot run a line without `ext-redis`.
 
