@@ -7,7 +7,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 - **PHP 8.2 is the minimum** (was 8.1). PRADO `master`, which the package tracks, requires PHP 8.2 since 2026-10-01, so `pradosoft/prado ^4.4@dev` no longer installs on 8.1 and the weekly build had been failing on every leg. `composer.json` declares `php: ^8.2` (platform 8.2) and PHPStan analyses 8.2 to 8.5. *Migration:* run PHP 8.2 or later; nothing in the package's API changes.
-- CI follows the framework's workflow. The matrix is PHP 8.2 to 8.5, the lowest-dependencies leg moves to 8.2, the coverage leg runs on the same 8.2 the single-version jobs use, `actions/checkout` is v7 and `actions/cache` v6, and the full check also runs on macOS and Windows with SQLite only (the Linux matrix still requires every backend). `friendsofphp/php-cs-fixer` and `phpstan/phpstan` are pinned to the exact versions the framework pins (3.95.27 and 2.3.0), and a `.github/dependabot.yml` groups GitHub Actions bumps and the two tools' bumps into weekly pull requests, so a tool release that adds rules arrives as a pull request instead of failing every branch. The file-mode test skips on Windows, which has no POSIX modes.
+- CI follows the framework's workflow. The matrix is PHP 8.2 to 8.5, the lowest-dependencies leg moves to 8.2, the coverage leg runs on the same 8.2 the single-version jobs use, `actions/checkout` is v7 and `actions/cache` v6, and the full check also runs on macOS and Windows with SQLite only (the Linux matrix still requires every backend). `friendsofphp/php-cs-fixer` and `phpstan/phpstan` are pinned to the exact versions the framework pins (3.95.27 and 2.3.3), and a `.github/dependabot.yml` groups GitHub Actions bumps and the two tools' bumps into weekly pull requests, so a tool release that adds rules arrives as a pull request instead of failing every branch. The file-mode test skips on Windows, which has no POSIX modes.
+
+### Fixed
+- Error messages render their arguments again. PRADO `master` now formats message-file entries as ICU MessageFormat patterns, which quote literal text with apostrophes, so every `'{0}'` in `config/errorMessages.txt` rendered the literal `{0}` and is now `''{0}''`. A unit test formats each entry through `MessageFormatter` and fails on an unrendered argument.
 
 ## [0.2.0] - 2026-09-21
 

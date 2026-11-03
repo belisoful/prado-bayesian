@@ -313,7 +313,7 @@ error handler rather than being reported as a client error. Responses carry
 ## Error codes
 
 All codes live in `config/errorMessages.txt` and are registered system-wide via
-`extra.prado.error-messages`. The framework's own `messages.txt` is not used.
+`extra.prado.error-messages`. The framework's own `messages.txt` is not used. Each entry is an ICU MessageFormat pattern (the framework formats it with `MessageFormatter`), so a quoted argument is written `''{0}''`: ICU reads a single apostrophe next to a brace as the start of literal text.
 
 ### Training and classification
 

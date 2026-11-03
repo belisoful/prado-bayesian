@@ -62,7 +62,7 @@
 - Throw appropriate PRADO exceptions (`TInvalidDataValueException`, `TInvalidOperationException`, `TConfigurationException`, etc.)
 - Return false or null for methods that are designed to fail gracefully
 - All methods should handle edge cases and validate input parameters
-- Extension Exceptions use errorCodes specified in `config/errorMessages.txt`; messages.txt is purely for user information display only.
+- Extension Exceptions use errorCodes specified in `config/errorMessages.txt`; each entry is an ICU MessageFormat pattern, so a quoted argument is written `''{0}''` (a single apostrophe next to a brace quotes the brace as literal text). messages.txt is purely for user information display only.
 
 ### Imports and Includes
 - Use PSR-4 autoloading - no manual includes required

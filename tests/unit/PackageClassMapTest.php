@@ -93,6 +93,20 @@ class PackageClassMapTest extends PHPUnit\Framework\TestCase
 	}
 
 	/**
+	 * @return array<string, string> The entries of config/errorMessages.txt, code => message pattern.
+	 */
+	private function definedMessages(): array
+	{
+		$messages = [];
+		foreach (file(__DIR__ . '/../../config/errorMessages.txt') ?: [] as $line) {
+			if (preg_match('/^\s*(bayesian_[a-z0-9_]+)\s*=\s*(.*?)\s*$/', $line, $match)) {
+				$messages[$match[1]] = $match[2];
+			}
+		}
+		return $messages;
+	}
+
+	/**
 	 * @return array<string, true> The codes defined in config/errorMessages.txt.
 	 */
 	private function definedCodes(): array
@@ -146,6 +160,25 @@ class PackageClassMapTest extends PHPUnit\Framework\TestCase
 			$exception = new \Prado\Exceptions\TInvalidDataValueException($code, 'a', 'b', 'c');
 			self::assertNotSame($code, $exception->getMessage(), "Error code {$code} did not resolve to its message text");
 			self::assertStringNotContainsString('{0}', $exception->getMessage(), "Error code {$code} left a placeholder unfilled");
+		}
+	}
+
+	/**
+	 * The framework formats a message file entry with ICU MessageFormat, which quotes literal text
+	 * with apostrophes: an entry written `'{0}'` renders the literal `{0}` and must be `''{0}''`.
+	 */
+	public function testEveryMessageIsAnIcuPatternThatRendersEveryArgument(): void
+	{
+		foreach ($this->definedMessages() as $code => $message) {
+			preg_match_all('/\{\s*(\d+)\s*[,}]/', $message, $matches);
+			$numbers = array_map('intval', array_unique($matches[1]));
+			$args = $numbers === [] ? [] : array_map(fn ($i) => "\u{AB}$i\u{BB}", range(0, max($numbers)));
+			$formatted = \MessageFormatter::formatMessage('en', $message, $args);
+			self::assertNotFalse($formatted, "Error code {$code} is not an ICU MessageFormat pattern");
+			self::assertDoesNotMatchRegularExpression('/\{\d/', $formatted, "Error code {$code} quotes a placeholder; double the apostrophe: ''{0}''");
+			foreach ($numbers as $i) {
+				self::assertStringContainsString("\u{AB}$i\u{BB}", $formatted, "Error code {$code} does not render argument {$i}");
+			}
 		}
 	}
 
