@@ -789,7 +789,9 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			$this->incrementVocabularySize($name, $this->insertVocabulary($name, array_keys(self::encodeTokens(array_keys($tokens)))));
 			$transaction->commit();
 		} catch (\Throwable $e) {
-			$transaction->rollBack();
+			if ($transaction->getActive()) {
+				$transaction->rollBack();
+			}
 			throw $e;
 		}
 		$this->_layoutChecked[$name] = true;
@@ -1446,7 +1448,8 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 	/**
 	 * Runs a unit of work in a transaction, running it again when the database refuses the
 	 * transaction over locks.  The work must be safe to repeat after a rollback: increments,
-	 * or a computation from what it reads inside the transaction.
+	 * or a computation from what it reads inside the transaction.  An exception from a handler
+	 * of the transaction's `OnCommit` event propagates as is: the work is committed by then.
 	 * @template T
 	 * @param callable(): T $work The work.
 	 * @throws \Throwable Whatever the work throws, once it is not a lock failure or the attempts are used up.
@@ -1461,6 +1464,11 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 				$transaction->commit();
 				return $result;
 			} catch (\Throwable $e) {
+				if (!$transaction->getActive()) {
+					// The commit went through and an OnCommit handler threw: the work is in
+					// the database, so there is nothing to roll back and nothing to repeat.
+					throw $e;
+				}
 				$transaction->rollBack();
 				if ($attempt >= self::MAX_WRITE_ATTEMPTS || !self::isLockFailure($e)) {
 					throw $e;
@@ -1836,7 +1844,9 @@ class TSqlBayesianStorage extends TComponent implements IBayesianHistogramStorag
 			$this->writeMetaRow($name, TBayesianPayload::encodeTokenMeta($meta, self::TOKEN_LAYOUT_VERSION));
 			$transaction->commit();
 		} catch (\Throwable $e) {
-			$transaction->rollBack();
+			if ($transaction->getActive()) {
+				$transaction->rollBack();
+			}
 			throw $e;
 		}
 	}

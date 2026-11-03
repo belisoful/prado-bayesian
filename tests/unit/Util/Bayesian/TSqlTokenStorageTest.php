@@ -7,8 +7,10 @@ use Belisoful\Prado\Util\Bayesian\Storage\TSqlBayesianStorage;
 use Belisoful\Prado\Util\Bayesian\TBayesianTokenHistogram;
 use Belisoful\Prado\Util\Bayesian\TLazyBayesianVocabulary;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Prado\Data\TDbConnection;
 
 require_once(__DIR__ . '/../../../test_tools/BayesianBackends.php');
+require_once(__DIR__ . '/../../../test_tools/BayesianObservedTransaction.php');
 require_once(__DIR__ . '/../../../test_tools/BayesianVariantIncrementalTests.php');
 
 /**
@@ -854,5 +856,80 @@ class TSqlTokenStorageTest extends PHPUnit\Framework\TestCase
 		self::assertSame(0, $storage->maintainTokenHistograms('nobody'));
 		self::assertSame(0, $storage->foldTokenHistograms('nobody'));
 		self::assertSame(0, $storage->getPendingTokenCount('nobody'));
+	}
+
+	public function testAnOnCommitHandlerExceptionIsNotMaskedByARollback()
+	{
+		// PRADO raises OnCommit after the database commits, and a handler that throws leaves
+		// the transaction committed and inactive.  The storage must let that exception through
+		// (a rollback of an inactive transaction would replace it with
+		// dbtransaction_transaction_inactive) and the write must stand.
+		$storage = $this->storage();
+		$connection = new TDbConnection($storage->getConnectionString());
+		$connection->setTransactionClass(BayesianObservedTransaction::class);
+		$storage->setDbConnection($connection);
+		BayesianObservedTransaction::reset(throwOnCommit: true);
+
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->setStorage($storage);
+		$classifier->setName('m');
+		$classifier->trainOne('spam', 'cheap pills buy now');
+		try {
+			$classifier->save();
+			self::fail('the OnCommit handler exception propagates out of the full save');
+		} catch (\RuntimeException $e) {
+			self::assertSame('after commit', $e->getMessage());
+		}
+		self::assertSame([1, 0], BayesianObservedTransaction::counts());
+		self::assertTrue($storage->exists('m'), 'the save was committed before the handler ran');
+
+		// The same for an incremental write, which goes through the retrying transaction: the
+		// handler's exception is neither masked nor mistaken for a reason to repeat the work.
+		$loaded = new TNaiveBayesClassifier();
+		$loaded->setStorage($storage);
+		$loaded->load('m');
+		try {
+			$loaded->trainOne('ham', 'project meeting agenda');
+			self::fail('the OnCommit handler exception propagates out of an incremental write');
+		} catch (\RuntimeException $e) {
+			self::assertSame('after commit', $e->getMessage());
+		}
+		self::assertSame([2, 0], BayesianObservedTransaction::counts());
+		$reader = new TNaiveBayesClassifier();
+		$reader->setStorage($this->storageFor($storage));
+		$reader->load('m');
+		self::assertSame('ham', $reader->classify('project meeting agenda'), 'the write was applied exactly once');
+	}
+
+	public function testAFailedWriteRollsBackOnce()
+	{
+		// A write that fails before the commit is rolled back, which raises OnRollback once and
+		// OnCommit never, and nothing of it is visible afterwards.
+		$storage = $this->storage();
+		$connection = new class ($storage->getConnectionString()) extends TDbConnection {
+			public function createCommand($sql)
+			{
+				if (str_starts_with((string) $sql, 'INSERT INTO') && str_contains((string) $sql, '_tokens')) {
+					throw new \RuntimeException('disk full');
+				}
+				return parent::createCommand($sql);
+			}
+		};
+		$connection->setTransactionClass(BayesianObservedTransaction::class);
+		$storage->setDbConnection($connection);
+		BayesianObservedTransaction::reset();
+
+		$classifier = new TNaiveBayesClassifier();
+		$classifier->setStorage($storage);
+		$classifier->setName('m');
+		$classifier->trainOne('spam', 'cheap pills buy now');
+		try {
+			$classifier->save();
+			self::fail('the failing write propagates');
+		} catch (\RuntimeException $e) {
+			self::assertSame('disk full', $e->getMessage());
+		}
+		self::assertSame([0, 1], BayesianObservedTransaction::counts());
+		self::assertFalse($storage->exists('m'));
 	}
 }
