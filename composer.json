@@ -49,8 +49,8 @@
 		"ext-redis": "Required by Belisoful\\Prado\\Util\\Bayesian\\Storage\\TRedisBayesianStorage for Redis-backed training persistence."
 	},
 	"require-dev": {
-		"friendsofphp/php-cs-fixer": "3.95.27",
-		"phpstan/phpstan": "2.3.3",
+		"friendsofphp/php-cs-fixer": "3.95.29",
+		"phpstan/phpstan": "2.3.5",
 		"phpunit/phpunit": "^10"
 	},
 	"minimum-stability": "dev",
